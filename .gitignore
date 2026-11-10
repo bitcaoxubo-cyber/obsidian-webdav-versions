@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+.local/
+dist/
+*.zip
+data.json
+local-state/
+.obsidian/
+.env*

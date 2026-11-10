@@ -1,0 +1,39 @@
+name: Check and release
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - run: node scripts/build.js
+      - run: node --test test/*.test.js
+      - run: git diff --exit-code -- main.js
+  release:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - run: node scripts/build.js && node scripts/package.js
+      - name: Publish prerelease with BRAT assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG=$(node -p "require('./manifest.json').version")
+          gh release create "$RELEASE_TAG" dist/main.js dist/manifest.json dist/*.zip dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "WebDAV Versions $RELEASE_TAG" --notes-file docs/RELEASE.md

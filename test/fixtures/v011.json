@@ -1,0 +1,55 @@
+{
+  "source": "desktop 0.1.1; synthetic data only",
+  "content": "液膜 test 😀\r\n",
+  "contentHash": "099175d6db92d7c8749de7cf53cfbe7136afee7398c0d3fefc06be707b1387d3",
+  "revisions": [
+    {
+      "path": "测量/note.md",
+      "parents": [],
+      "blob": "099175d6db92d7c8749de7cf53cfbe7136afee7398c0d3fefc06be707b1387d3",
+      "device": "Mac mini",
+      "nonce": "fixed-base",
+      "id": "42ef90d1796e8dcf7d05bea456df1333b5b29d877a9edfe0c14a6cc5a6077098"
+    },
+    {
+      "path": "测量/note.md",
+      "parents": [
+        "42ef90d1796e8dcf7d05bea456df1333b5b29d877a9edfe0c14a6cc5a6077098"
+      ],
+      "blob": "45569da57f4b7bf472d7a864ef4781451cae6383fee9fb0ae40c59aa1ce475b7",
+      "device": "iPhone",
+      "nonce": "fixed-phone",
+      "id": "dcf398ecff514134c9cca6d2474255695975bddd66881bb088134dc5261e415e"
+    },
+    {
+      "path": "测量/note.md",
+      "parents": [
+        "42ef90d1796e8dcf7d05bea456df1333b5b29d877a9edfe0c14a6cc5a6077098"
+      ],
+      "blob": "68693d02ab4fbb2331b8cc39915322e48e61f06d4d1b31e7d19913202857bc8a",
+      "device": "Mac",
+      "nonce": "fixed-mac",
+      "id": "140eb3293eed74fb279de016147970d6b6071cfad3d48c414ea1f390284096d8"
+    }
+  ],
+  "projection": [
+    [
+      "测量/note.md",
+      {
+        "path": "测量/note.md",
+        "id": "140eb3293eed74fb279de016147970d6b6071cfad3d48c414ea1f390284096d8",
+        "blob": "68693d02ab4fbb2331b8cc39915322e48e61f06d4d1b31e7d19913202857bc8a",
+        "conflict": false
+      }
+    ],
+    [
+      "测量/note (sync-conflict iPhone dcf398ecff514134c9cca6d2474255695975bddd66881bb088134dc5261e415e).md",
+      {
+        "path": "测量/note.md",
+        "id": "dcf398ecff514134c9cca6d2474255695975bddd66881bb088134dc5261e415e",
+        "blob": "45569da57f4b7bf472d7a864ef4781451cae6383fee9fb0ae40c59aa1ce475b7",
+        "conflict": true
+      }
+    ]
+  ]
+}

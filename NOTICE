@@ -1,0 +1,10 @@
+WebDAV Versions for Obsidian
+Derived from WebDAV Sync by storyteller / leopard530
+https://github.com/leopard530/obsidian-sync-webdav
+Upstream revision 1ed8b7876e206b3efc0e54537b30b53f0ad92c7c, Apache License 2.0.
+This fork adapts vault event handling, plugin controls and WebDAV integration.
+It replaces overwriting synchronization with immutable revisions and an offline outbox.
+Vendored sax-js 1.6.1 is distributed under the Blue Oak Model License 1.0.0.
+See sax.LICENSE in the release or src/vendor/sax.LICENSE in this source tree.
+
+Mobile adaptation (0.2.0-beta.1): portable byte and SHA-256 helpers, Obsidian DataAdapter journal/state, native requestUrl transport, mobile status and lifecycle handling. Original licenses and attribution are preserved.

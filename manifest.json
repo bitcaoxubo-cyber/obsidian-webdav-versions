@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-webdav-versions",
+  "name": "WebDAV Versions · 飞牛同步",
+  "version": "0.2.0-beta.1",
+  "minAppVersion": "1.11.4",
+  "description": "通过飞牛 WebDAV 同步 Mac 与 iPhone 本地笔记，保留并发修改版本。移动端测试版。",
+  "author": "Local fork of storyteller / leopard530",
+  "isDesktopOnly": false
+}
