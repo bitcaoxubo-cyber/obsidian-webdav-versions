@@ -2531,13 +2531,17 @@ class SyncScheduler {
   change(paths, { full = false } = {}) {
     if (full) this.fullRequested++;
     for (const path of paths) { this.dirty.set(path, ++this.generation); this.eventDirty.add(path); }
-    this.activity++; this.resetPoll(); this.schedule();
+    this.activity++; this.pollIntervalMs = BASE_POLL;
+    // An event may pull an armed poll forward to 60 s, but must never push it back.
+    if (this.pollTimer == null || this.pollDueAt > this.now() + BASE_POLL) this.armPoll();
+    this.schedule();
   }
   foreground() {
     this.fullRequested++; this.activity++; this.resetPoll(); this.schedule(1000);
   }
   schedule(delay = this.debounceMs) {
     this.clearTimeout(this.changeTimer); this.changeTimer = null;
+    delay = Math.max(delay, (this.retryAt ?? 0) - this.now());
     this.dirtyDeadline = this.now() + delay;
     if (!this.allowed() || this.running) return;
     this.changeTimer = this.setTimeout(async () => {
@@ -2550,6 +2554,7 @@ class SyncScheduler {
     if (!this.allowed() || this.running) return;
     const untilFull = this.lastFullAt === null ? this.pollIntervalMs : Math.max(0, this.lastFullAt + FULL_INTERVAL - this.now());
     const delay = Math.max(1000, Math.min(this.pollIntervalMs, untilFull), (this.retryAt ?? this.now()) - this.now());
+    this.pollDueAt = this.now() + delay;
     this.pollTimer = this.setTimeout(async () => {
       this.pollTimer = null;
       await this.dispatch();
