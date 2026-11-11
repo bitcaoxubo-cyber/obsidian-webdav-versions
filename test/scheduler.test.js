@@ -148,3 +148,138 @@ test('A5: plugin routes file events, deep/manual commands, foreground and failur
   p.openStatus(); assert.ok(panels.some(text => text.includes('当前轮询间隔') && text.includes(String(p.scheduler.pollIntervalMs / 1000))));
   p.onunload(); assert.equal(time.pending(), 0);
 });
+
+const orphanPath = 'note (sync-conflict Mac abc).md';
+function deferredFixture(mobile = true, resultFor = () => ({ deferredPaths: [orphanPath] })) {
+  const time = clock(), calls = [];
+  const scheduler = new SyncScheduler({ mobile, ...time, active: () => true, enabled: () => true,
+    run: async () => {
+      const ticket = scheduler.begin(), call = { now: time.now(), full: ticket.full, dirty: ticket.dirty };
+      calls.push(call); scheduler.complete(ticket, resultFor(calls.length)); call.poll = scheduler.pollIntervalMs;
+    } });
+  scheduler.resetPoll(); scheduler.schedule(1200);
+  return { scheduler, time, calls };
+}
+
+for (const mobile of [true, false]) test(`C1: ${mobile ? 'mobile' : 'desktop'} persistent deferred work takes at most five rounds in ten idle minutes`, async () => {
+  const { scheduler, time, calls } = deferredFixture(mobile);
+  try { await time.tick(600000); assert.ok(calls.length <= 5, `${calls.length} rounds`); }
+  finally { scheduler.stop(); }
+});
+
+test('C1: persistent deferred retries are at least sixty seconds apart and back off to three hundred', async () => {
+  for (const mobile of [true, false]) {
+    const { scheduler, time, calls } = deferredFixture(mobile);
+    try {
+      await time.tick(600000);
+      const gaps = calls.slice(1).map((call, i) => call.now - calls[i].now);
+      assert.ok(gaps.every(ms => ms >= 60000), JSON.stringify(gaps));
+      assert.deepEqual(calls.map(call => call.poll), [60000,120000,240000,300000]);
+      await time.tick(301200); // The ten-minute full deadline precedes the next 300-second poll.
+      assert.equal(calls.at(-1).now - calls.at(-2).now, 300000);
+    } finally { scheduler.stop(); }
+  }
+});
+
+test('C1: deferred paths remain visible to the next polling ticket', async () => {
+  const { scheduler, time, calls } = deferredFixture();
+  try {
+    await time.tick(1200);
+    scheduler.pause(); scheduler.armPoll();
+    await time.tick(scheduler.pollIntervalMs);
+    assert.equal(calls.length, 2); assert.deepEqual(calls[1].dirty, [orphanPath]);
+  } finally { scheduler.stop(); }
+});
+
+test('C1: a file event promotes deferred work and keeps the platform debounce deadline', async () => {
+  for (const [mobile, delay] of [[true,15000],[false,5000]]) {
+    const { scheduler, time, calls } = deferredFixture(mobile);
+    try {
+      await time.tick(1200); await time.tick(2000);
+      scheduler.change([orphanPath]);
+      await time.tick(delay - 1); assert.equal(calls.length, 1);
+      await time.tick(1); assert.equal(calls.length, 2);
+      assert.deepEqual(calls[1].dirty, [orphanPath]);
+    } finally { scheduler.stop(); }
+  }
+});
+
+test('C1: a newly reported deferred path is retried within sixty seconds', async () => {
+  const { scheduler, time, calls } = deferredFixture(true, n => ({ deferredPaths: n === 1 ? [] : [orphanPath] }));
+  try {
+    await time.tick(121200); assert.equal(calls.length, 2);
+    await time.tick(60000);
+    assert.ok(calls.length >= 3); assert.ok(calls[2].now - calls[1].now <= 60000);
+    assert.deepEqual(calls[2].dirty, [orphanPath]);
+  } finally { scheduler.stop(); }
+});
+
+test('C1: no-deferred idle polling still follows sixty, one-twenty, two-forty and three-hundred seconds', async () => {
+  const { scheduler, time, calls } = deferredFixture(true, n => ({ uploaded: n === 1 ? 1 : 0, deferredPaths: [] }));
+  try {
+    await time.tick(600000);
+    assert.deepEqual(calls.map(call => call.now), [1200,61200,181200,421200]);
+    assert.deepEqual(calls.map(call => call.poll), [60000,120000,240000,300000]);
+  } finally { scheduler.stop(); }
+});
+
+test('C1: deferred set changes reset polling, while order changes alone preserve backoff', () => {
+  const { scheduler: s } = deferredFixture();
+  try {
+    s.complete(s.begin(), { deferredPaths: ['a.md'] }); assert.equal(s.pollIntervalMs, 60000);
+    s.complete(s.begin(), { deferredPaths: ['a.md'] }); assert.equal(s.pollIntervalMs, 120000);
+    s.complete(s.begin(), { deferredPaths: ['a.md','b.md'] }); assert.equal(s.pollIntervalMs, 60000);
+    s.complete(s.begin(), { deferredPaths: ['b.md','a.md'] }); assert.equal(s.pollIntervalMs, 120000);
+    s.complete(s.begin(), { deferredPaths: [] }); assert.equal(s.pollIntervalMs, 60000);
+  } finally { s.stop(); }
+});
+
+test('C1: a newer event during sync gets one debounce retry then returns to polling if still deferred', async () => {
+  const { scheduler: s, time, calls } = deferredFixture();
+  try {
+    s.change([orphanPath]); const ticket = s.begin();
+    s.change([orphanPath]); s.complete(ticket, { deferredPaths: [orphanPath] });
+    await time.tick(15000); assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].dirty, [orphanPath]);
+    await time.tick(15000); assert.equal(calls.length, 1, 'the processed event must not stay event-dirty forever');
+  } finally { s.stop(); }
+});
+
+for (const mobile of [true, false]) test(`C1: real engine keeps an orphan copy safe during ${mobile ? 'mobile' : 'desktop'} polling and uploads after a rename event`, async () => {
+  const { Adapter } = require('./helpers/adapter');
+  const { MobileVault, MobileState } = require('../src/mobile');
+  const { SyncEngine } = require('../src/engine');
+  const { bytes } = require('../src/bytes');
+  const { EventEmitter } = require('node:events');
+  let lists = 0;
+  const remote = { blobs: new Map(), revs: new Map(),
+    async listRevisions() { lists++; return [...this.revs.values()]; },
+    async getBlob(id) { return this.blobs.get(id).slice(); },
+    async putBlob(id, value) { this.blobs.set(id, bytes(value).slice()); },
+    async putRevision(revision) { this.revs.set(revision.id, revision); } };
+  const adapter = new Adapter(), local = new MobileVault(adapter);
+  const state = new MobileState(adapter, local.privateDir, 'https://example.test/vault/', 'u');
+  const engine = new SyncEngine({ remote, local, state, device: 'test' });
+  const original = bytes('orphan copy; keep every byte'); adapter.put(orphanPath, original);
+  const time = clock(), calls = [], events = new EventEmitter();
+  const s = new SyncScheduler({ mobile, ...time, active: () => true, enabled: () => true,
+    run: async () => { const ticket = s.begin(), result = await engine.sync(ticket); calls.push({ now: time.now(), ticket, result }); s.complete(ticket, result); } });
+  events.on('rename', (file, previous) => s.change([file.path, previous]));
+  s.resetPoll(); s.schedule(1200);
+  try {
+    await time.tick(600000);
+    assert.ok(calls.length <= 5, `${calls.length} rounds`); assert.ok(lists <= 5, `${lists} remote listings`);
+    assert.equal(remote.revs.size, 0); assert.equal(remote.blobs.size, 0);
+    assert.deepEqual(adapter.files.get(orphanPath), original);
+    const previousCalls = calls.length;
+    await adapter.rename(orphanPath, 'renamed.md'); events.emit('rename', { path: 'renamed.md' }, orphanPath);
+    await time.tick(mobile ? 15000 : 5000);
+    assert.ok(calls.length > previousCalls);
+    assert.ok(calls[previousCalls].now <= 600000 + (mobile ? 15000 : 5000));
+    assert.equal(remote.revs.size, 1); assert.equal([...remote.revs.values()][0].path, 'renamed.md');
+    assert.deepEqual([...remote.blobs.values()][0], original);
+    assert.deepEqual(calls.at(-1).result.deferredPaths, []);
+    assert.equal(adapter.files.has(orphanPath), false); assert.deepEqual(adapter.files.get('renamed.md'), original);
+    assert.deepEqual(s.begin().dirty, []);
+  } finally { s.stop(); }
+});

@@ -10,7 +10,8 @@ class SyncScheduler {
     this.run = run; this.enabled = enabled; this.active = active;
     this.debounceMs = mobile ? 15_000 : 5_000;
     this.pollIntervalMs = BASE_POLL;
-    this.dirty = new Map(); this.generation = 0; this.activity = 0;
+    this.dirty = new Map(); this.eventDirty = new Set(); this.deferredPaths = new Set();
+    this.generation = 0; this.activity = 0;
     this.fullRequested = 1; this.fullCompleted = 0; this.lastFullAt = null;
     this.running = false; this.stopped = false;
   }
@@ -27,7 +28,7 @@ class SyncScheduler {
   resetPoll() { this.retryAt = null; this.pollIntervalMs = BASE_POLL; this.armPoll(); }
   change(paths, { full = false } = {}) {
     if (full) this.fullRequested++;
-    for (const path of paths) this.dirty.set(path, ++this.generation);
+    for (const path of paths) { this.dirty.set(path, ++this.generation); this.eventDirty.add(path); }
     this.activity++; this.resetPoll(); this.schedule();
   }
   foreground() {
@@ -65,16 +66,23 @@ class SyncScheduler {
   complete(ticket, result) {
     const deferred = new Set(result.deferredPaths || []);
     for (const [path, generation] of ticket.entries) {
-      if (!deferred.has(path) && this.dirty.get(path) === generation) this.dirty.delete(path);
+      if (this.dirty.get(path) === generation) {
+        // This event was observed by the completed round. A deferred result keeps
+        // the path for polling, but only a newer event may request a debounce.
+        this.eventDirty.delete(path);
+        if (!deferred.has(path)) this.dirty.delete(path);
+      }
     }
     for (const path of deferred) if (!this.dirty.has(path)) this.dirty.set(path, ++this.generation);
     if (ticket.full) { this.lastFullAt = this.now(); this.fullCompleted = Math.max(this.fullCompleted, ticket.fullRequested); }
     const newerActivity = this.activity !== ticket.activity;
-    this.pollIntervalMs = result.uploaded || result.downloaded || result.deleted || newerActivity ? BASE_POLL : Math.min(MAX_POLL, this.pollIntervalMs * 2);
+    const deferredChanged = deferred.size !== this.deferredPaths.size || [...deferred].some(path => !this.deferredPaths.has(path));
+    this.deferredPaths = deferred;
+    this.pollIntervalMs = result.uploaded || result.downloaded || result.deleted || newerActivity || deferredChanged ? BASE_POLL : Math.min(MAX_POLL, this.pollIntervalMs * 2);
     this.running = false;
     this.armPoll();
     if (this.fullRequested > this.fullCompleted) this.schedule(1000);
-    else if (this.dirty.size) this.schedule(newerActivity ? Math.max(0, (this.dirtyDeadline ?? this.now() + this.debounceMs) - this.now()) : this.debounceMs);
+    else if (this.eventDirty.size) this.schedule(newerActivity ? Math.max(0, (this.dirtyDeadline ?? this.now() + this.debounceMs) - this.now()) : this.debounceMs);
   }
   fail() {
     this.running = false; this.fullRequested++; this.pollIntervalMs = BASE_POLL; this.retryAt = this.now() + BASE_POLL;
