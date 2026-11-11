@@ -129,3 +129,54 @@ test('B3: selected v2 validates format only once while uploading ten files', asy
   }
   assert.equal(f.calls.filter(c => c.method === 'GET' && c.path === v2 + 'format.json').length, 1);
 });
+
+test('B5: cached v1 idle poll uses two PROPFIND requests and notices completed migration', async () => {
+  const f = fixture(); const rows = seed(f, 2); const client = new AdaptiveDavRemote(f.options);
+  await client.listRevisions(); f.calls.length = 0;
+  assert.equal((await client.listRevisions()).length, rows.length);
+  assert.deepEqual(f.calls.map(c => [c.method, c.path]), [['PROPFIND', v2], ['PROPFIND', v1]]);
+  await migrateStorage(f.options, backups());
+  assert.equal((await client.listRevisions()).length, rows.length);
+  assert.equal(client.selected, client.sharded);
+});
+
+test('B5: cached v1 pauses when another device starts an incomplete migration', async () => {
+  const f = fixture(); seed(f, 1); const client = new AdaptiveDavRemote(f.options);
+  await client.listRevisions(); f.dirs.add(v2);
+  await assert.rejects(client.listRevisions(), /迁移未完成/);
+  assert.equal(client.selected, null);
+});
+
+test('B5: cached v2 idle poll has at most eighteen requests with no GET and detects rollback from root inventory', async () => {
+  const f = fixture(); f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+  for (const bucket of '0123456789abcdef') f.dirs.add(v2 + bucket + '/');
+  const client = new AdaptiveDavRemote(f.options); await client.listRevisions(); f.calls.length = 0;
+  await client.listRevisions();
+  assert.equal(f.calls.length, 18);
+  assert.equal(f.calls.filter(c => c.method === 'GET').length, 0);
+  f.files.set(v2 + 'rollback.json', Buffer.from('{}')); f.calls.length = 0;
+  await assert.rejects(client.listRevisions(), /回退/);
+  assert.equal(f.calls.filter(c => c.method === 'GET').length, 0);
+  assert.equal(client.selected, null);
+});
+
+test('B5: a failed cached listing clears layout selection and revalidates format on the next round', async () => {
+  const f = fixture(); f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+  const client = new AdaptiveDavRemote(f.options); await client.listRevisions();
+  f.hook = async ({ method, p }) => { if (method === 'PROPFIND' && p === v2) throw new Error('offline'); };
+  await assert.rejects(client.listRevisions(), /传输失败/);
+  assert.equal(client.selected, null);
+  f.hook = async () => {}; f.files.set(v2 + 'format.json', Buffer.from('{"version":999}')); f.calls.length = 0;
+  await assert.rejects(client.listRevisions(), /不支持/);
+  assert.ok(f.calls.some(c => c.method === 'GET' && c.path === v2 + 'format.json'));
+});
+
+test('B5: cached v2 still detects old-client writes and a missing format marker', async () => {
+  const f = fixture(); const rows = seed(f, 1); await migrateStorage(f.options, backups());
+  const client = new AdaptiveDavRemote(f.options); await client.listRevisions();
+  f.files.set(v1 + rows[0].id + '.json', Buffer.from(JSON.stringify(rows[0])));
+  await assert.rejects(client.listRevisions(), /旧目录仍有/);
+  f.files.delete(v1 + rows[0].id + '.json'); await client.listRevisions();
+  f.files.delete(v2 + 'format.json');
+  await assert.rejects(client.listRevisions(), /迁移/);
+});

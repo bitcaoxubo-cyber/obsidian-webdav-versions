@@ -1,0 +1,146 @@
+✔ a 10000-entry legacy listing stops with an actionable cap error before fetching revisions (78.507875ms)
+✔ migration drains capped listings, preserves every object byte and revision identity, then fresh clients read all histories (12.266709ms)
+✔ a crash after MOVE can resume without forgetting the original IDs or republishing revisions (3.441834ms)
+✔ resume rechecks a corrupt destination left by an interrupted move before publishing the format (1.970125ms)
+✔ a real missing known revision prevents format activation and preserves local ancestry (1.837292ms)
+✔ sharded listing still rejects missing parents, missing blobs and disappeared cached revisions (3.95125ms)
+✔ late writes by an old client stop new clients instead of being silently omitted (1.727834ms)
+✔ rollback restores the original flat objects byte-for-byte and archives metadata without DELETE (4.215875ms)
+✔ B3: selected v2 validates format only once while uploading ten files (3.393917ms)
+✖ B5: cached v1 idle poll uses two PROPFIND requests and notices completed migration (0.865666ms)
+✖ B5: cached v1 pauses when another device starts an incomplete migration (0.308833ms)
+✖ B5: cached v2 idle poll has at most eighteen requests with no GET and detects rollback from root inventory (0.879917ms)
+✖ B5: a failed cached listing clears layout selection and revalidates format on the next round (0.220166ms)
+✔ B5: cached v2 still detects old-client writes and a missing format marker (0.724084ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 10
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 148.840541
+
+✖ failing tests:
+
+test at test/sharded.test.js:133:1
+✖ B5: cached v1 idle poll uses two PROPFIND requests and notices completed migration (0.865666ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      [
+  +     'GET',
+  +     '/vault/obsidian-webdav-versions-v2/rollback.json'
+  +   ],
+  +   [
+  +     'GET',
+  +     '/vault/obsidian-webdav-versions-v2/format.json'
+  +   ],
+  +   [
+        'PROPFIND',
+        '/vault/obsidian-webdav-versions-v2/'
+      ],
+      [
+        'PROPFIND',
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/sharded.test.js:137:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ [ 'GET', '/vault/obsidian-webdav-versions-v2/rollback.json' ], [ 'GET', '/vault/obsidian-webdav-versions-v2/format.json' ], [ 'PROPFIND', '/vault/obsidian-webdav-versions-v2/' ], [ 'PROPFIND', '/vault/obsidian-webdav-versions-v1/' ] ],
+    expected: [ [ 'PROPFIND', '/vault/obsidian-webdav-versions-v2/' ], [ 'PROPFIND', '/vault/obsidian-webdav-versions-v1/' ] ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/sharded.test.js:143:1
+✖ B5: cached v1 pauses when another device starts an incomplete migration (0.308833ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + DavRemote {
+  +   auth: '',
+  +   base: https://example.test/vault/,
+  +   created: true,
+  +   folder: https://example.test/vault/obsidian-webdav-versions-v1/,
+  +   request: [AsyncFunction: request],
+  +   revisions: Map(1) {
+  +     '0e9156228783c4d44b05cd7aa1031f9f3967397cc826d677270df28c83e0f676' => {
+  +       blob: '081a89a5b26ff53af2f0802778b75dcabe068fe6650ad66e680eef0450e9a008',
+  +       device: 'legacy',
+  +       id: '0e9156228783c4d44b05cd7aa1031f9f3967397cc826d677270df28c83e0f676',
+  +       nonce: 'fixed-0',
+  +       parents: [],
+  +       path: 'note-0.md'
+  +     }
+  +   },
+  +   verifiedBlobs: Set(0) {}
+  + }
+  - null
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/sharded.test.js:147:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [DavRemote],
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/sharded.test.js:150:1
+✖ B5: cached v2 idle poll has at most eighteen requests with no GET and detects rollback from root inventory (0.879917ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  21 !== 18
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/sharded.test.js:155:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 21,
+    expected: 18,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/sharded.test.js:163:1
+✖ B5: a failed cached listing clears layout selection and revalidates format on the next round (0.220166ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + ShardedStore {
+  +   auth: '',
+  +   base: https://example.test/vault/,
+  +   buckets: Set(0) {},
+  +   created: true,
+  +   folder: https://example.test/vault/obsidian-webdav-versions-v2/,
+  +   legacy: DavRemote {
+  +     auth: '',
+  +     base: https://example.test/vault/,
+  +     created: false,
+  +     folder: https://example.test/vault/obsidian-webdav-versions-v1/,
+  +     request: [AsyncFunction: request],
+  +     revisions: Map(0) {},
+  +     verifiedBlobs: Set(0) {}
+  +   },
+  +   request: [AsyncFunction: request],
+  +   revisions: Map(0) {},
+  +   verifiedBlobs: Set(0) {}
+  + }
+  - null
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/sharded.test.js:168:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ShardedStore],
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -51,8 +51,12 @@ class ShardedStore extends DavRemote {
     if (!this.buckets.has(name)) {await mkdir(this,new URL(name+'/',this.folder));this.buckets.add(name);}
     return super.immutable(url,data,type,limit,verify);
   }
-  async inventory() {
+  async inventory({ syncing = false } = {}) {
     const root=await this.propfind(this.folder,1);
+    // Maintenance also calls inventory while these markers are being moved.
+    // Apply the sync gate here only for ordinary polling, using this same listing.
+    if (syncing && root.has('rollback.json')) throw new Error('远端正在回退存储布局；已暂停。');
+    if (syncing && !root.has('format.json')) throw new Error('远端分目录存储尚未完成迁移。');
     const buckets=[];
     for(const [name,dir] of root) {
       if(dir && HEX.test(name)) buckets.push(name);
@@ -73,13 +77,11 @@ class ShardedStore extends DavRemote {
     return objects;
   }
   async listRevisions() {
-    const rollback=await this.read(new URL('rollback.json',this.folder),REV_LIMIT,true);
-    if(rollback!==null) throw new Error('远端正在回退存储布局；已暂停。');
+    const objects=await this.inventory({ syncing: true });
     const leftovers=await this.legacy.propfind(this.legacy.folder,1,true);
     if(leftovers && [...leftovers].some(([name,dir])=>name!==MARKER || dir)) {
       throw new Error('旧目录仍有同步对象；请暂停旧客户端并完成迁移，避免遗漏旧端写入。');
     }
-    const objects=await this.inventory();
     const ids=[...objects.keys()].filter(n=>n.endsWith('.json')).map(n=>n.slice(0,-5));
     for(const id of this.revisions.keys()) if(!objects.has(id+'.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
     await parallel(ids.filter(id=>!this.revisions.has(id)),async id=>{
@@ -103,6 +105,7 @@ class AdaptiveDavRemote {
     }
   }
   async select() {
+    if (this.selected) return this.selected;
     const r=this.legacy, folder=this.sharded.folder;
     if(await r.read(new URL('rollback.json',folder),REV_LIMIT,true)!==null) throw new Error('远端正在回退存储布局；已暂停。');
     const format=await r.read(new URL('format.json',folder),REV_LIMIT,true);
@@ -115,7 +118,20 @@ class AdaptiveDavRemote {
     this.selected=this.legacy;return this.selected;
   }
   probe() {return this.legacy.probe();}
-  async listRevisions() {return (await this.select()).listRevisions();}
+  async listRevisions() {
+    try {
+      // A v1 selection must still notice another device beginning migration.
+      // A missing v2 collection implies both metadata GETs would be 404.
+      if (this.selected === this.legacy && await this.legacy.propfind(this.sharded.folder,0,true) !== null) {
+        this.selected = null;
+      }
+      return await (await this.select()).listRevisions();
+    } catch (error) {
+      this.selected = null;
+      this.sharded.created = false;
+      throw error;
+    }
+  }
   async getBlob(id) {return (this.selected||await this.select()).getBlob(id);}
   async putBlob(id,data) {return (this.selected||await this.select()).putBlob(id,data);}
   async putRevision(rev) {return (this.selected||await this.select()).putRevision(rev);}
