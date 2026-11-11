@@ -82,6 +82,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.status.addEventListener('click', () => this.run('sync', true));
     this.addRibbonIcon('refresh-cw', '飞牛 WebDAV：立即同步', () => this.run('sync', true));
     this.addCommand({ id: 'sync-now', name: '立即同步', callback: () => this.run('sync', true) });
+    this.addCommand({ id: 'sync-deep', name: '深度校验同步', callback: () => this.run('deep', true) });
     this.addCommand({ id: 'sync-status', name: '查看同步状态', callback: () => this.openStatus() });
     this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => new ConflictsModal(this.app, this.result).open() });
     this.addCommand({ id: 'resolve-current', name: '采用当前文件解决冲突', checkCallback: checking => {
@@ -199,7 +200,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync();
+      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: true, deep: mode === 'deep' });
       this.result = r;
       this.lastError = '';
       const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';

@@ -60,7 +60,7 @@ class SyncEngine {
     this.queue = Promise.resolve();
   }
 
-  sync() { return this._enqueue(() => this._run()); }
+  sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
   resolve(physicalPath) { return this._enqueue(() => this._run(physicalPath)); }
 
   _enqueue(run) {
@@ -277,7 +277,7 @@ class SyncEngine {
     }
   }
 
-  async _run(selected) {
+  async _run(selected, options = {}) {
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
@@ -287,6 +287,7 @@ class SyncEngine {
       this.remote.stats = result.stats;
       if (this.remote.request) this.remote.request.stats = result.stats;
     }
+    await this.local.beginRound?.({ deep: options.deep === true });
     await this.local.recover?.();
     const s = await this._open();
     await this._recover(s, result);
@@ -322,6 +323,7 @@ class SyncEngine {
     result.deferredPaths = [...deferred].sort();
     result.deferred = result.deferredPaths.length;
     await this._save(s);
+    await this.local.flush?.();
     result.stats.durationMs = Date.now() - started;
     return result;
   }

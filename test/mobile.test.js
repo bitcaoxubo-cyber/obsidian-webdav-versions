@@ -170,3 +170,83 @@ test('A3: asynchronous SHA-256 uses WebCrypto and falls back when subtle is abse
     assert.equal(fallbacks, 1);
   } finally { Object.defineProperty(globalThis, 'crypto', descriptor); }
 });
+
+function trackedNotes(adapter) {
+  const count = { reads: 0, stats: 0 };
+  const read = adapter.readBinary.bind(adapter), stat = adapter.stat.bind(adapter);
+  adapter.readBinary = async name => { if (!name.startsWith('.')) count.reads++; return read(name); };
+  adapter.stat = async name => { if (name === 'x.md') count.stats++; return stat(name); };
+  return count;
+}
+
+test('A1: stable hash cache reuses list stat once per file per round', async () => {
+  const adapter = new Adapter(), local = new MobileVault(adapter), count = trackedNotes(adapter);
+  adapter.put('x.md', 'same');
+  local.beginRound(); await local.list();
+  assert.equal(await local.hash('x.md'), digest('same'));
+  assert.equal(count.stats, 1); assert.equal(count.reads, 1);
+  await local.flush(); count.reads = count.stats = 0;
+  local.beginRound(); await local.list();
+  assert.equal(await local.hash('x.md'), digest('same'));
+  assert.equal(count.stats, 1); assert.equal(count.reads, 0);
+});
+
+test('A1: files inside the two second timestamp window always rehash', async () => {
+  const adapter = new Adapter(Date.now() - 500), local = new MobileVault(adapter), count = trackedNotes(adapter);
+  adapter.put('x.md', 'same');
+  assert.equal(await local.hash('x.md'), digest('same'));
+  adapter.files.set('x.md', bytes('edit'));
+  assert.equal(await local.hash('x.md'), digest('edit'));
+  assert.equal(count.reads, 2);
+});
+
+test('A1: cache survives a new MobileVault instance', async () => {
+  const adapter = new Adapter(), first = new MobileVault(adapter), count = trackedNotes(adapter);
+  adapter.put('x.md', 'same'); await first.hash('x.md'); await first.flush();
+  count.reads = 0;
+  assert.equal(await new MobileVault(adapter).hash('x.md'), digest('same'));
+  assert.equal(count.reads, 0);
+});
+
+test('A1: corrupt cache falls back to hashing and sync still succeeds', async () => {
+  const r = remote(), first = client(r, 'phone'); first.adapter.put('x.md', 'same');
+  await first.engine.sync(); await first.local.flush();
+  first.adapter.put(first.local.privateDir + '/mobile-hash-cache.json', '{corrupt');
+  const second = client(r, 'phone', first.adapter), count = trackedNotes(first.adapter);
+  assert.equal((await second.engine.sync()).uploaded, 0);
+  assert.ok(count.reads >= 1);
+});
+
+test('A1: changed mtime and content are captured and uploaded', async () => {
+  const r = remote(), c = client(r, 'phone'); c.adapter.put('x.md', 'same');
+  await c.engine.sync(); await c.local.flush(); c.adapter.put('x.md', 'edit');
+  assert.equal((await c.engine.sync()).uploaded, 1);
+  assert.ok([...r.revs.values()].some(row => row.blob === digest('edit')));
+});
+
+test('A1: deep validation bypasses even a matching cache signature', async () => {
+  const adapter = new Adapter(), local = new MobileVault(adapter), count = trackedNotes(adapter);
+  adapter.put('x.md', 'same'); await local.hash('x.md'); await local.flush(); count.reads = 0;
+  adapter.files.set('x.md', bytes('edit'));
+  local.beginRound({ deep: true });
+  assert.equal(await local.hash('x.md'), digest('edit')); assert.equal(count.reads, 1);
+});
+
+test('A1: compareAndSet always rereads content instead of trusting the cache', async () => {
+  const adapter = new Adapter(), local = new MobileVault(adapter);
+  adapter.put('x.md', 'same'); await local.hash('x.md');
+  adapter.files.set('x.md', bytes('edit'));
+  assert.equal(await local.compareAndSet('x.md', digest('same'), bytes('next')), false);
+  assert.equal(text(adapter.files.get('x.md')), 'edit');
+});
+
+test('A1: flush warms only paths invalidated by local writes', async () => {
+  const adapter = new Adapter(), local = new MobileVault(adapter), count = trackedNotes(adapter);
+  adapter.put('untouched.md', 'unrelated');
+  assert.equal(await local.compareAndSet('x.md', null, bytes('download')), true);
+  count.reads = 0; await local.flush();
+  assert.equal(count.reads, 1);
+  local.beginRound(); count.reads = 0;
+  assert.equal(await local.hash('x.md'), digest('download')); assert.equal(count.reads, 0);
+  assert.equal(local.hashCache.has('untouched.md'), false);
+});

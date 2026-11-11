@@ -434,7 +434,7 @@ class SyncEngine {
     this.queue = Promise.resolve();
   }
 
-  sync() { return this._enqueue(() => this._run()); }
+  sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
   resolve(physicalPath) { return this._enqueue(() => this._run(physicalPath)); }
 
   _enqueue(run) {
@@ -651,7 +651,7 @@ class SyncEngine {
     }
   }
 
-  async _run(selected) {
+  async _run(selected, options = {}) {
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
@@ -661,6 +661,7 @@ class SyncEngine {
       this.remote.stats = result.stats;
       if (this.remote.request) this.remote.request.stats = result.stats;
     }
+    await this.local.beginRound?.({ deep: options.deep === true });
     await this.local.recover?.();
     const s = await this._open();
     await this._recover(s, result);
@@ -696,6 +697,7 @@ class SyncEngine {
     result.deferredPaths = [...deferred].sort();
     result.deferred = result.deferredPaths.length;
     await this._save(s);
+    await this.local.flush?.();
     result.stats.durationMs = Date.now() - started;
     return result;
   }
@@ -855,6 +857,8 @@ class DiskVault {
   }
   hashOf(value) { return hash(value, this.stats); }
   async read(name) { return this.readFile(this.filePath(name), 512 * 1024 * 1024); }
+
+  beginRound({ deep = false } = {}) { if (deep) this.hashCache.clear(); }
 
   async hash(name) {
     const file = this.filePath(name);
@@ -1186,8 +1190,8 @@ class AdapterIO {
       else if (stat.type !== 'folder') throw new Error('同步工作目录被文件占用：' + prefix);
     }
   }
-  async read(path, limit = MOBILE_LIMIT) {
-    const stat = await this.adapter.stat(path);
+  async read(path, limit = MOBILE_LIMIT, knownStat) {
+    const stat = knownStat === undefined ? await this.adapter.stat(path) : knownStat;
     if (!stat) return null;
     if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + path);
     if (stat.size > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
@@ -1280,6 +1284,13 @@ class MobileVault extends AdapterIO {
     this.configDir = configDir; this.guard = guard; this.active = active;
     this.privateDir = configDir + '/plugins/obsidian-webdav-versions/local-state';
     this.transaction = this.privateDir + '/mobile-transaction';
+    this.cacheFile = this.privateDir + '/mobile-hash-cache.json';
+    this.hashCache = new Map();
+    this.statHints = new Map();
+    this.cacheWarm = new Set();
+    this.cacheLoaded = false;
+    this.cacheDirty = false;
+    this.deep = false;
   }
   path(name) {
     if (typeof name !== 'string' || !name || /[\\\x00-\x1f]/.test(name) || /^[A-Za-z]:/.test(name) ||
@@ -1290,9 +1301,75 @@ class MobileVault extends AdapterIO {
   }
   checkActive() { if (!this.active()) throw new Error('同步已暂停；请返回 Obsidian 前台。'); }
   async read(name) { this.checkActive(); return super.read(this.path(name)); }
-  async hash(name) { return await this.hashOf(await this.read(name)); }
+  beginRound({ deep = false } = {}) {
+    this.statHints.clear();
+    this.deep = deep;
+  }
+  async loadCache() {
+    if (this.cacheLoaded) return;
+    this.cacheLoaded = true;
+    try {
+      const data = await super.read(this.cacheFile);
+      if (data === null) return;
+      const row = JSON.parse(text(data));
+      if (row.version !== 1 || !Array.isArray(row.entries)) throw new Error('Invalid hash cache');
+      const entries = new Map();
+      for (const [name, value] of row.entries) {
+        this.path(name);
+        if (!value || !Number.isFinite(value.mtime) || !Number.isSafeInteger(value.size) || value.size < 0 ||
+            !/^[a-f0-9]{64}$/.test(value.hash)) throw new Error('Invalid hash cache entry');
+        entries.set(name, { mtime: value.mtime, size: value.size, hash: value.hash });
+      }
+      this.hashCache = entries;
+    } catch { this.hashCache.clear(); } // A cache is a hint; missing/corrupt hints must never stop sync.
+  }
+  invalidate(name) {
+    if (this.hashCache.delete(name)) this.cacheDirty = true;
+    this.statHints.delete(name);
+    this.cacheWarm.add(name);
+  }
+  async hash(name) {
+    this.checkActive(); this.path(name); await this.loadCache();
+    const stat = this.statHints.has(name) ? this.statHints.get(name) : await this.adapter.stat(name);
+    this.statHints.delete(name); // A listing stamp belongs to exactly one scan, never a later round.
+    if (!stat) {
+      if (this.hashCache.delete(name)) this.cacheDirty = true;
+      return null;
+    }
+    if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + name);
+    if (stat.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + name);
+    const cached = this.hashCache.get(name);
+    const oldEnough = Number.isFinite(stat.mtime) && Date.now() - stat.mtime >= 2000;
+    if (!this.deep && !this.cacheWarm.has(name) && oldEnough && cached?.mtime === stat.mtime && cached.size === stat.size) return cached.hash;
+    const value = await super.read(name, MOBILE_LIMIT, stat);
+    const hash = await this.hashOf(value);
+    if (Number.isFinite(stat.mtime) && stat.size === value.length) {
+      const next = { mtime: stat.mtime, size: stat.size, hash };
+      if (!cached || cached.mtime !== next.mtime || cached.size !== next.size || cached.hash !== hash) {
+        this.hashCache.set(name, next); this.cacheDirty = true;
+      }
+    } else if (this.hashCache.delete(name)) this.cacheDirty = true;
+    return hash;
+  }
+  async flush() {
+    await this.loadCache();
+    // CAS invalidates the old signature. Read the actual saved file once, including
+    // any edit that followed CAS, so a later idle scan need not warm the whole vault.
+    for (const name of [...this.cacheWarm]) {
+      await this.hash(name);
+      this.cacheWarm.delete(name);
+    }
+    if (!this.cacheDirty) return;
+    await this.mkdir(this.privateDir);
+    const tmp = this.cacheFile + '.writing-' + randomUUID();
+    await this.adapter.writeBinary(tmp, arrayBuffer(JSON.stringify({ version: 1, entries: [...this.hashCache] })));
+    if (await this.adapter.exists(this.cacheFile)) await this.adapter.remove(this.cacheFile);
+    await this.adapter.rename(tmp, this.cacheFile);
+    this.cacheDirty = false;
+  }
   async list() {
     this.checkActive();
+    this.statHints.clear();
     const files = [];
     const visit = async dir => {
       const listed = await this.adapter.list(dir);
@@ -1306,6 +1383,7 @@ class MobileVault extends AdapterIO {
           const st = await this.adapter.stat(p);
           if (!st || st.type !== 'file') throw new Error('扫描期间文件发生变化，请重试。');
           if (st.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + p);
+          this.statHints.set(p, st);
           files.push(p);
         }
       }
@@ -1328,6 +1406,7 @@ class MobileVault extends AdapterIO {
       await this.finish(); return;
     }
     const tx = JSON.parse(text(meta)); this.path(tx.name);
+    this.invalidate(tx.name);
     for (const h of [tx.expected, tx.next]) if (h !== null && !/^[a-f0-9]{64}$/.test(h)) throw new Error('恢复记录校验失败。');
     const actual = await this.read(tx.name);
     if (previous !== null && await this.hashOf(previous) !== tx.expected) {
@@ -1347,6 +1426,12 @@ class MobileVault extends AdapterIO {
     await this.finish();
   }
   async compareAndSet(name, expected, next) {
+    this.path(name);
+    this.invalidate(name);
+    try { return await this.applyFile(name, expected, next); }
+    finally { this.invalidate(name); }
+  }
+  async applyFile(name, expected, next) {
     this.path(name); this.checkActive(); await this.recover();
     if (next !== null && bytes(next).length > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB。');
     const before = await this.read(name);
@@ -1494,6 +1579,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.status.addEventListener('click', () => this.run('sync', true));
     this.addRibbonIcon('refresh-cw', '飞牛 WebDAV：立即同步', () => this.run('sync', true));
     this.addCommand({ id: 'sync-now', name: '立即同步', callback: () => this.run('sync', true) });
+    this.addCommand({ id: 'sync-deep', name: '深度校验同步', callback: () => this.run('deep', true) });
     this.addCommand({ id: 'sync-status', name: '查看同步状态', callback: () => this.openStatus() });
     this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => new ConflictsModal(this.app, this.result).open() });
     this.addCommand({ id: 'resolve-current', name: '采用当前文件解决冲突', checkCallback: checking => {
@@ -1611,7 +1697,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync();
+      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: true, deep: mode === 'deep' });
       this.result = r;
       this.lastError = '';
       const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';

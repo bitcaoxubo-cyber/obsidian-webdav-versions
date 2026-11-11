@@ -149,6 +149,8 @@ class DiskVault {
   hashOf(value) { return hash(value, this.stats); }
   async read(name) { return this.readFile(this.filePath(name), 512 * 1024 * 1024); }
 
+  beginRound({ deep = false } = {}) { if (deep) this.hashCache.clear(); }
+
   async hash(name) {
     const file = this.filePath(name);
     const stamp = async () => {
