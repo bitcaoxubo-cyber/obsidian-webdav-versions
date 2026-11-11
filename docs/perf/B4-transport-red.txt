@@ -1,0 +1,112 @@
+✖ B4: mobile prefetch consumes its HEAD once and a later get requires a fresh HEAD (0.685458ms)
+✖ B4: a prefetched large mobile blob keeps range validation and one HEAD (65.395417ms)
+✖ B4: prefetched mobile size remains bounded and requires the exact HEAD length (0.128209ms)
+✖ B4: preflight does not bypass the foreground guard or content checksum (0.097666ms)
+✖ B4: failed prefetch clears all unused HEAD reservations (0.079833ms)
+✖ B4: desktop HEAD absence falls back without making mobile HEAD optional (0.087041ms)
+✖ B4: adaptive store forwards size preflight and explicit cleanup (0.100375ms)
+✖ B4: mobile size reuses a listing stamp without reading content or weakening validation (0.256958ms)
+✖ B4: desktop size checks paths and bytes without opening a file body (2.873625ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 0
+ℹ fail 9
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 103.710083
+
+✖ failing tests:
+
+test at test/b4-transport.test.js:24:1
+✖ B4: mobile prefetch consumes its HEAD once and a later get requires a fresh HEAD (0.685458ms)
+  TypeError [Error]: f.remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:26:31)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+
+test at test/b4-transport.test.js:33:1
+✖ B4: a prefetched large mobile blob keeps range validation and one HEAD (65.395417ms)
+  TypeError [Error]: f.remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:35:31)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+
+test at test/b4-transport.test.js:42:1
+✖ B4: prefetched mobile size remains bounded and requires the exact HEAD length (0.128209ms)
+  TypeError [Error]: tooLarge.remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:44:40)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/b4-transport.test.js:52:1
+✖ B4: preflight does not bypass the foreground guard or content checksum (0.097666ms)
+  TypeError [Error]: f.remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:54:18)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/b4-transport.test.js:61:1
+✖ B4: failed prefetch clears all unused HEAD reservations (0.079833ms)
+  TypeError [Error]: f.remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:63:18)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/b4-transport.test.js:68:1
+✖ B4: desktop HEAD absence falls back without making mobile HEAD optional (0.087041ms)
+  TypeError [Error]: remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:72:31)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/b4-transport.test.js:78:1
+✖ B4: adaptive store forwards size preflight and explicit cleanup (0.100375ms)
+  TypeError [Error]: remote.getBlobSize is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:81:29)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/b4-transport.test.js:86:1
+✖ B4: mobile size reuses a listing stamp without reading content or weakening validation (0.256958ms)
+  TypeError [Error]: local.size is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:91:68)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/b4-transport.test.js:99:1
+✖ B4: desktop size checks paths and bytes without opening a file body (2.873625ms)
+  TypeError [Error]: local.size is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-b4-transport/test/b4-transport.test.js:106:30)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)

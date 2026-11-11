@@ -3,6 +3,7 @@
 const { indexRevisions, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
+const { parallel } = require('./sharded');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -53,7 +54,9 @@ function snapshot(revisions) {
 }
 
 class SyncEngine {
-  constructor({ remote, local, state, device }) {
+  constructor({ remote, local, state, device, concurrency = 4 }) {
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Transfer concurrency must be between 1 and 4');
+    this.concurrency = concurrency;
     this.remote = remote;
     this.local = local;
     this.state = state;
@@ -279,8 +282,8 @@ class SyncEngine {
     return hashOf(value);
   }
 
-  async _read(physical) {
-    const data = await this.local.read(physical);
+  async _read(physical, limit) {
+    const data = await this.local.read(physical, limit);
     if (data !== null && !this.local.tracksStats) this.stats.vaultReads++;
     return data;
   }
@@ -387,47 +390,93 @@ class SyncEngine {
     await this._push(s, selected, path, tips, data, result);
   }
 
+  * _batches(items) {
+    const budget = this.local.transferBudget || 128 * 1024 * 1024;
+    let batch = [], total = 0;
+    for (const item of items) {
+      if (batch.length && (batch.length >= this.concurrency || total + item.size > budget)) {
+        yield batch; batch = []; total = 0;
+      }
+      batch.push(item); total += item.size;
+      // A single oversized or unknown-size body reserves the whole channel.
+      if (item.size > budget) { yield batch; batch = []; total = 0; }
+    }
+    if (batch.length) yield batch;
+  }
+
   async _capture(s, before, result, deferred) {
     const listed = this.full ? await this.local.list() : [...this.dirty];
     const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
-    const readAhead = new Map();
-    // Detect file/folder, case and Unicode collisions before publishing new filenames.
+    const sizes = new Map();
+    const sizeOf = async name => {
+      if (!sizes.has(name)) sizes.set(name, this.local.size ? await this.local.size(name) : undefined);
+      const size = sizes.get(name);
+      if (size !== undefined && size !== null && (!Number.isSafeInteger(size) || size < 0 || size > MAX_BYTES)) throw new Error('Invalid or oversized local file: ' + name);
+      return size;
+    };
+    // Validate all potential new names before publishing. Keep metadata only;
+    // incremental batches of new files must not turn into a whole-vault readAhead.
     const provisional = [];
     for (const name of listed) {
       checkPhysical(name);
       if (!isConflictPath(name) && !before.files.has(name)) {
         if (!this.full) {
-          const data = await this._read(name); checkSize(data, name); readAhead.set(name, data);
-          if (data === null) continue;
+          const size = await sizeOf(name);
+          if (size === null) continue;
+          if (size === undefined) {
+            const value = await this._read(name); checkSize(value, name);
+            if (value === null) continue;
+          }
         }
         provisional.push(makeRevision({ path: name, parents: [], blob: '0'.repeat(64), device: this.device }));
       }
     }
     if (provisional.length) project([...s.revs.values(), ...provisional]);
+    const candidates = [];
     for (const physical of paths) {
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
-      const data = readAhead.has(physical) ? readAhead.get(physical) : await this._read(physical);
-      checkSize(data, physical);
-      const hash = await this._hash(data);
-      this.observed.set(physical, hash);
-      if (base) {
-        if (hash !== base.blob) {
-          if (s.splitJournal && this._rebindDescendant(s, before, physical, base, hash)) await this._checkpointProgress(s);
-          else await this._push(s, physical, base.path, base.parents, data, result);
+      const size = await sizeOf(physical);
+      candidates.push({ physical, base, size: size === undefined ? MAX_BYTES : size === null ? 0 : size });
+    }
+    for (const batch of this._batches(candidates)) {
+      try {
+        await parallel(batch, async row => {
+          this.local.checkActive?.();
+          row.data = await this._read(row.physical, row.size); checkSize(row.data, row.physical);
+          if (row.data !== null && row.data.byteLength > row.size) throw new Error('Local file grew beyond reserved size: ' + row.physical);
+          row.hash = await this._hash(row.data);
+          this.observed.set(row.physical, row.hash);
+        }, this.concurrency);
+        const pushes = [];
+        for (const row of batch) {
+          const { physical, base, hash, data } = row;
+          if (base) {
+            if (hash !== base.blob) {
+              if (s.splitJournal && this._rebindDescendant(s, before, physical, base, hash)) await this._checkpointProgress(s);
+              else pushes.push({ ...row, path: base.path, parents: base.parents });
+            }
+          } else if (data !== null) {
+            const remote = before.files.get(physical);
+            if (remote && hash === remote.blob) {
+              if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
+            } else if (isConflictPath(physical)) deferred.add(physical);
+            else pushes.push({ ...row, path: physical, parents: s.absent.get(physical) || [] });
+          }
         }
-        continue;
-      }
-      if (data === null) continue;
-      const remote = before.files.get(physical);
-      if (remote && hash === remote.blob) {
-        if (this._bind(s, physical, remote)) await this._checkpointProgress(s); // Fresh device with identical content.
-      } else if (isConflictPath(physical)) {
-        // A generated copy without a recorded owner cannot safely become a new logical note.
-        deferred.add(physical);
-      } else {
-        // Independent roots preserve different pre-existing files on the first sync.
-        await this._push(s, physical, physical, s.absent.get(physical) || [], data, result);
+        // Content-addressed blobs are safe to pre-upload. Revision publication,
+        // journals and acknowledgements below remain strictly serial.
+        await parallel(pushes.filter(row => row.data !== null), async row => {
+          this.local.checkActive?.();
+          await this.remote.putBlob(row.hash, row.data);
+        }, this.concurrency);
+        for (const row of pushes) {
+          this.local.checkActive?.();
+          await this._push(s, row.physical, row.path, row.parents, row.data, result);
+          row.data = null;
+        }
+      } finally {
+        for (const row of batch) row.data = null;
       }
     }
     await this._save(s);
@@ -435,6 +484,7 @@ class SyncEngine {
 
   async _apply(s, nextView, result, deferred) {
     const paths = new Set([...nextView.files.keys(), ...s.files.keys()]);
+    const plans = [];
     for (const physical of paths) {
       if (deferred.has(physical)) continue;
       const old = s.files.get(physical);
@@ -448,38 +498,66 @@ class SyncEngine {
         if (this._bind(s, physical, next)) await this._checkpointProgress(s);
         continue;
       }
-      if (actual !== expected) {
-        deferred.add(physical);
-        continue;
-      }
-      const data = next ? await this.remote.getBlob(wanted) : null;
-      if (await this._hash(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
+      if (actual !== expected) { deferred.add(physical); continue; }
       const deletionIds = old && physical === old.path && nextView.versions.get(old.path)?.size === 1
         ? nextView.versions.get(old.path).get(null) : null;
       const absent = !next && deletionIds ? { path: old.path, parents: deletionIds } : null;
       const known = next?.parents || nextView.tips.get(old?.path) || [];
-      s.pending = { kind: 'apply', physical, next,
-        ...(s.splitJournal && s.receiptSupported ? { absent, known } : {}) };
-      await this._beginPending(s);
-      const applied = await this.local.compareAndSet(physical, expected, data);
-      if (applied) {
-        this.observed.set(physical, wanted);
-        this._bind(s, physical, next);
-        if (absent) this._setAbsent(s, absent.path, absent.parents);
-        await this._completeOperation(s, next, absent, known);
-        if (next) result.downloaded++;
-        else result.deleted++;
-      } else {
-        this.observed.delete(physical);
-        deferred.add(physical); // The editor changed it after the scan. Capture on next sync.
+      plans.push({ physical, next, expected, wanted, absent, known, size: 0 });
+    }
+    // HEADs transfer metadata only, in the same bounded pool. The remote passes
+    // each preflight to the subsequent GET instead of issuing another HEAD.
+    await parallel(plans.filter(row => row.next), async row => {
+      this.local.checkActive?.();
+      const size = this.remote.getBlobSize ? await this.remote.getBlobSize(row.wanted) : null;
+      if (size !== null && (!Number.isSafeInteger(size) || size < 0 || size > MAX_BYTES)) throw new Error('Invalid remote blob size');
+      row.size = size === null ? MAX_BYTES : size;
+    }, this.concurrency);
+    for (const batch of this._batches(plans)) {
+      try {
+        await parallel(batch, async row => {
+          this.local.checkActive?.();
+          row.data = row.next ? await this.remote.getBlob(row.wanted, row.size) : null;
+          if (row.data !== null && row.data.byteLength > row.size) throw new Error('Downloaded content exceeds reserved size: ' + row.physical);
+          if (await this._hash(row.data) !== row.wanted) throw new Error('Downloaded content checksum mismatch for ' + row.physical);
+        }, this.concurrency);
+        // All completed payloads stay charged to this batch until CAS and journal
+        // acknowledgement finish. No next batch starts while these bytes are held.
+        for (const row of batch) {
+          const { physical, next, expected, wanted, absent, known, data } = row;
+          this.local.checkActive?.();
+          s.pending = { kind: 'apply', physical, next,
+            ...(s.splitJournal && s.receiptSupported ? { absent, known } : {}) };
+          await this._beginPending(s);
+          const applied = await this.local.compareAndSet(physical, expected, data);
+          if (applied) {
+            this.observed.set(physical, wanted);
+            this._bind(s, physical, next);
+            if (absent) this._setAbsent(s, absent.path, absent.parents);
+            await this._completeOperation(s, next, absent, known);
+            if (next) result.downloaded++;
+            else result.deleted++;
+          } else {
+            this.observed.delete(physical);
+            deferred.add(physical); // An editor change after the scan must survive.
+          }
+          await this._finishPending(s);
+          await this._checkpointProgress(s);
+          row.data = null;
+        }
+      } finally {
+        for (const row of batch) row.data = null;
       }
-      await this._finishPending(s);
-      await this._checkpointProgress(s);
     }
     await this._save(s);
   }
 
   async _run(selected, options = {}) {
+    try { return await this._runOnce(selected, options); }
+    finally { this.remote.clearBlobPreflights?.(); }
+  }
+
+  async _runOnce(selected, options = {}) {
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;

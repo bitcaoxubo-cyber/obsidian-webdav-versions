@@ -33,7 +33,7 @@ async function mkdir(remote, url) {
 class ShardedStore extends DavRemote {
   constructor(options, legacy) {
     super(options); this.folder=new URL(V2_NAMESPACE+'/',this.base); this.legacy=legacy;
-    this.buckets=new Set();
+    this.buckets=new Set(); this.bucketPromises=new Map();
   }
   objectURL(id,suffix) {
     if (!/^[a-f0-9]{64}$/.test(id) || !['.json','.blob'].includes(suffix)) throw new Error('无效的对象标识。');
@@ -48,7 +48,15 @@ class ShardedStore extends DavRemote {
   async immutable(url,data,type,limit,verify) {
     const name=url.pathname.slice(this.folder.pathname.length).split('/')[0];
     if (!HEX.test(name)) throw new Error('无效的分目录对象路径。');
-    if (!this.buckets.has(name)) {await mkdir(this,new URL(name+'/',this.folder));this.buckets.add(name);}
+    if (!this.buckets.has(name)) {
+      let creating=this.bucketPromises.get(name);
+      if (!creating) {
+        creating=mkdir(this,new URL(name+'/',this.folder)).then(()=>this.buckets.add(name));
+        this.bucketPromises.set(name,creating);
+      }
+      try { await creating; }
+      finally { if(this.bucketPromises.get(name)===creating)this.bucketPromises.delete(name); }
+    }
     return super.immutable(url,data,type,limit,verify);
   }
   async inventory({ syncing = false } = {}) {
@@ -78,6 +86,7 @@ class ShardedStore extends DavRemote {
     return objects;
   }
   async listRevisions() {
+    this.clearBlobPreflights();
     const objects=await this.inventory({ syncing: true });
     const leftovers=await this.legacy.propfind(this.legacy.folder,1,true);
     if(leftovers && [...leftovers].some(([name,dir])=>name!==MARKER || dir)) {
@@ -120,6 +129,7 @@ class AdaptiveDavRemote {
   }
   probe() {return this.legacy.probe();}
   async listRevisions() {
+    this.clearBlobPreflights();
     try {
       // A v1 selection must still notice another device beginning migration.
       // A missing v2 collection implies both metadata GETs would be 404.
@@ -133,7 +143,9 @@ class AdaptiveDavRemote {
       throw error;
     }
   }
-  async getBlob(id) {return (this.selected||await this.select()).getBlob(id);}
+  clearBlobPreflights() { this.legacy.clearBlobPreflights(); this.sharded.clearBlobPreflights(); }
+  async getBlobSize(id) {return (this.selected||await this.select()).getBlobSize(id);}
+  async getBlob(id,expectedSize) {return (this.selected||await this.select()).getBlob(id,expectedSize);}
   async putBlob(id,data) {return (this.selected||await this.select()).putBlob(id,data);}
   async putRevision(rev) {return (this.selected||await this.select()).putRevision(rev);}
 }

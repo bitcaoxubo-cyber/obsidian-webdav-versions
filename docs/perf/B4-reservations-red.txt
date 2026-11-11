@@ -1,0 +1,88 @@
+✖ B4: every shared-blob HEAD reservation keeps its own desktop GET limit (4.346167ms)
+✖ B4: concurrent HEAD completion order cannot exchange different planned GET limits (0.804333ms)
+✖ B4: an explicit download reservation remains a GET cap even without a matching HEAD entry (0.429792ms)
+✖ B4: nine mobile files sharing one blob consume nine HEADs across three payload batches (6.908083ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 0
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 48.27175
+
+✖ failing tests:
+
+test at ../../../../../private/tmp/obsidian-B4-final/test/b4-transport.test.js:133:1
+✖ B4: every shared-blob HEAD reservation keeps its own desktop GET limit (4.346167ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      5,
+  +   536870912
+  -   5
+    ]
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-B4-final/test/b4-transport.test.js:141:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 5, 536870912 ],
+    expected: [ 5, 5 ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../../private/tmp/obsidian-B4-final/test/b4-transport.test.js:144:1
+✖ B4: concurrent HEAD completion order cannot exchange different planned GET limits (0.804333ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async TestContext.<anonymous> (/private/tmp/obsidian-B4-final/test/b4-transport.test.js:159:3)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /大小与预检不符/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at ../../../../../private/tmp/obsidian-B4-final/test/b4-transport.test.js:163:1
+✖ B4: an explicit download reservation remains a GET cap even without a matching HEAD entry (0.429792ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   536870912
+  -   5
+    ]
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-B4-final/test/b4-transport.test.js:167:65)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 536870912 ],
+    expected: [ 5 ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../../private/tmp/obsidian-B4-final/test/b4-transport.test.js:171:1
+✖ B4: nine mobile files sharing one blob consume nine HEADs across three payload batches (6.908083ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  17 !== 9
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-B4-final/test/b4-transport.test.js:181:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 17,
+    expected: 9,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

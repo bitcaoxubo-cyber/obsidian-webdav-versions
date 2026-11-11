@@ -52,8 +52,10 @@ function readBytes(file, limit = Infinity) {
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error('目标不是普通文件：' + path.basename(file));
-    if (stat.size > limit) throw new Error('文件超过 512 MiB：' + path.basename(file));
-    return fs.readFileSync(fd);
+    if (stat.size > limit) throw new Error((limit < 512 * 1024 * 1024 ? '文件大小在同步期间变化；请重试：' : '文件超过 512 MiB：') + path.basename(file));
+    const data = fs.readFileSync(fd);
+    if (data.byteLength > limit) throw new Error('文件大小在读取期间变化；请重试：' + path.basename(file));
+    return data;
   } finally { fs.closeSync(fd); }
 }
 
@@ -192,6 +194,7 @@ class DiskVault {
     this.guard = guard;
     this.hashCache = new Map();
     this.tracksStats = true;
+    this.transferBudget = 128 * 1024 * 1024;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
     }
@@ -242,7 +245,14 @@ class DiskVault {
     return data;
   }
   hashOf(value) { return hash(value, this.stats); }
-  async read(name) { return this.readFile(this.filePath(name), 512 * 1024 * 1024); }
+  async read(name, limit = 512 * 1024 * 1024) { return this.readFile(this.filePath(name), Math.min(512 * 1024 * 1024, limit)); }
+  async size(name) {
+    const stat = statMaybe(this.filePath(name));
+    if (!stat) return null;
+    if (!stat.isFile()) throw new Error('笔记不是普通文件：' + name);
+    if (stat.size > 512 * 1024 * 1024) throw new Error('文件超过 512 MiB：' + name);
+    return stat.size;
+  }
 
   beginRound({ deep = false } = {}) { if (deep) this.hashCache.clear(); }
 

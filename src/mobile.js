@@ -11,18 +11,20 @@ function mobileRequest(requestUrl, active = () => true) {
     if (request.stats) request.stats.httpRequests++;
     return requestUrl(args);
   };
-  const request = async ({ url, method, headers, body, limit }) => {
+  const request = async ({ url, method, headers, body, limit, preflight }) => {
     if (!active()) throw mobileError('MOBILE_PAUSED');
     const nativeHeaders = { ...headers };
     delete nativeHeaders['Content-Length']; delete nativeHeaders['Accept-Encoding'];
+    let expectedLength = null;
     // requestUrl has no streaming reader. Check size before allocating a blob.
     if (method === 'GET' && url.pathname.endsWith('.blob')) {
-      const head = await send({ url: url.href, method: 'HEAD', headers: nativeHeaders, throw: false });
+      const head = preflight?.url === url.href ? preflight : await send({ url: url.href, method: 'HEAD', headers: nativeHeaders, throw: false });
       const h = Object.fromEntries(Object.entries(head.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
       if (head.status !== 404) {
         if (head.status !== 200 || !/^\d+$/.test(h['content-length'] || '')) throw mobileError('MOBILE_HEAD_REQUIRED');
         if (Number(h['content-length']) > Math.min(limit, MOBILE_LIMIT)) throw mobileError('MOBILE_TOO_LARGE');
         const size = Number(h['content-length']);
+        expectedLength = size;
         if (size > DOWNLOAD_CHUNK) {
           const assembled = new Uint8Array(size);
           for (let start = 0; start < size; start += DOWNLOAD_CHUNK) {
@@ -50,13 +52,15 @@ function mobileRequest(requestUrl, active = () => true) {
     const response = await send({ url: url.href, method, headers: nativeHeaders,
       ...(body === undefined ? {} : { body: arrayBuffer(body) }), throw: false });
     if (!active()) throw mobileError('MOBILE_PAUSED');
-    if (!(response.arrayBuffer instanceof ArrayBuffer) || response.arrayBuffer.byteLength > Math.min(limit, MOBILE_LIMIT)) {
-      throw mobileError('MOBILE_TOO_LARGE');
-    }
+    if (!(response.arrayBuffer instanceof ArrayBuffer)) throw mobileError('MOBILE_TOO_LARGE');
+    if (response.status === 200 && expectedLength !== null && response.arrayBuffer.byteLength !== expectedLength) throw mobileError('MOBILE_RANGE_INVALID');
+    if (response.arrayBuffer.byteLength > Math.min(limit, MOBILE_LIMIT)) throw mobileError('MOBILE_TOO_LARGE');
     return { status: response.status, body: bytes(response.arrayBuffer),
       headers: Object.fromEntries(Object.entries(response.headers || {}).map(([k,v]) => [k.toLowerCase(),v])) };
   };
   request.tracksStats = true;
+  request.requiresBlobHead = true;
+  request.blobLimit = MOBILE_LIMIT;
   return request;
 }
 
@@ -82,10 +86,10 @@ class AdapterIO {
     const stat = knownStat === undefined ? await this.adapter.stat(path) : knownStat;
     if (!stat) return null;
     if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + path);
-    if (stat.size > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
+    if (stat.size > limit) throw new Error((limit < MOBILE_LIMIT ? '文件大小在同步期间变化；请重试：' : '手机单个文件上限为 128 MiB：') + path);
     const value = bytes(await this.adapter.readBinary(path));
     if (this.stats && this.privateDir && !path.startsWith(this.privateDir + '/')) this.stats.vaultReads++;
-    if (value.length > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
+    if (value.length > limit) throw new Error((limit < MOBILE_LIMIT ? '文件大小在同步期间变化；请重试：' : '手机单个文件上限为 128 MiB：') + path);
     return value;
   }
   // The destination must be absent. Adapter.copy is documented to fail on existing files.
@@ -283,6 +287,7 @@ class MobileVault extends AdapterIO {
     super(adapter);
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') throw new Error('不支持这个 Obsidian 配置目录。');
     this.tracksStats = true;
+    this.transferBudget = 32 * 1024 * 1024;
     this.configDir = configDir; this.guard = guard; this.active = active;
     this.privateDir = configDir + '/plugins/obsidian-webdav-versions/local-state';
     this.transaction = this.privateDir + '/mobile-transaction';
@@ -302,7 +307,16 @@ class MobileVault extends AdapterIO {
     return name;
   }
   checkActive() { if (!this.active()) throw new Error('同步已暂停；请返回 Obsidian 前台。'); }
-  async read(name) { this.checkActive(); return super.read(this.path(name)); }
+  async read(name, limit = MOBILE_LIMIT) { this.checkActive(); return super.read(this.path(name), Math.min(MOBILE_LIMIT, limit)); }
+  async size(name) {
+    this.checkActive(); this.path(name);
+    const stat = this.statHints.has(name) ? this.statHints.get(name) : await this.adapter.stat(name);
+    if (!stat) return null;
+    if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + name);
+    if (!Number.isSafeInteger(stat.size) || stat.size < 0) throw new Error('本地文件大小无效：' + name);
+    if (stat.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + name);
+    return stat.size;
+  }
   beginRound({ deep = false } = {}) {
     this.statHints.clear();
     this.deep = deep;

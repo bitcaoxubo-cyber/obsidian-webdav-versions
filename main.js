@@ -233,6 +233,7 @@ class DavRemote {
     this.confirmedPuts = new Set();
     this.uncertainPuts = new Set();
     this.created = false;
+    this.blobPreflights = new Map();
   }
 
   async hashOf(value) {
@@ -240,7 +241,7 @@ class DavRemote {
     return sha256(value);
   }
 
-  async call(method, url, headers, body, limit) {
+  async call(method, url, headers, body, limit, preflight) {
     if (url.origin !== this.base.origin) throw new Error('已阻止跨站 WebDAV 请求。');
     headers = { 'Accept-Encoding': 'identity', ...headers };
     if (this.auth) headers.Authorization = this.auth;
@@ -249,7 +250,7 @@ class DavRemote {
     try {
       if (this.request.tracksStats) this.request.stats = this.stats;
       else if (this.stats) this.stats.httpRequests++;
-      result = await this.request({ method, url, headers, body, limit });
+      result = await this.request({ method, url, headers, body, limit, preflight });
     } catch (err) {
       // TLS and transport exceptions may contain user information or signed URLs.
       const mobileMessages = {
@@ -279,30 +280,34 @@ class DavRemote {
   }
   async ensureFolder() {
     if (this.created) return;
-    await this.probe();
-    if (await this.propfind(this.folder, 0, true) === null) {
-      const r = await this.call('MKCOL', this.folder, {}, undefined, REV_LIMIT);
-      if (![200, 201, 204, 405].includes(r.status)) throw httpError('MKCOL', r.status);
-      // 405 can mean "exists" OR "operation not supported".
-      await this.propfind(this.folder, 0);
-    }
-    this.created = true;
+    const creating = this.creating ||= (async () => {
+      await this.probe();
+      if (await this.propfind(this.folder, 0, true) === null) {
+        const r = await this.call('MKCOL', this.folder, {}, undefined, REV_LIMIT);
+        if (![200, 201, 204, 405].includes(r.status)) throw httpError('MKCOL', r.status);
+        // 405 can mean "exists" OR "operation not supported".
+        await this.propfind(this.folder, 0);
+      }
+      this.created = true;
+    })();
+    try { await creating; }
+    finally { if (this.creating === creating) this.creating = null; }
   }
   objectURL(id, suffix) {
     checkHash(id);
     return new URL(id + suffix, this.folder);
   }
-  async read(url, limit, missingOK = false) {
-    const r = await this.call('GET', url, {}, undefined, limit);
+  async read(url, limit, missingOK = false, preflight) {
+    const r = await this.call('GET', url, {}, undefined, limit, preflight);
     if (missingOK && r.status === 404) return null;
     if (r.status !== 200) throw httpError('GET', r.status);
     return r.body;
   }
   rememberObjects(urls) {
     this.objectInventory = new Set(urls);
-    for (const key of this.confirmedPuts) {
-      if (!this.objectInventory.has(key)) this.confirmedPuts.delete(key);
-    }
+    // Reuse covers preupload and serial publication in this listing epoch only.
+    // Existing objects in a fresh listing must take the usual GET verification.
+    this.confirmedPuts.clear();
   }
   addressedObject(url) {
     const match = /\/([a-f0-9]{64})\.(blob|json)$/.exec(url.pathname);
@@ -317,7 +322,7 @@ class DavRemote {
       this.objectInventory?.add(key);
       this.uncertainPuts.delete(key);
     };
-    // A successful verified put can be reused during this session (B4 preupload).
+    // A verified put can be reused until the next listing (B4 preupload).
     // Marker files are not content-addressed and retain the original read path.
     if (addressed && this.confirmedPuts.has(key)) return;
     if (!addressed || this.objectInventory === null || this.objectInventory.has(key) || this.uncertainPuts.has(key)) {
@@ -334,11 +339,46 @@ class DavRemote {
     await verify(await this.read(url, limit));
     confirm();
   }
-  async getBlob(id) {
-    const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
-    if (await this.hashOf(bytes) !== id) throw integrity();
-    this.verifiedBlobs.add(id);
-    return bytes;
+  clearBlobPreflights() { this.blobPreflights.clear(); }
+  async getBlobSize(id) {
+    const url = this.objectURL(id, '.blob');
+    try {
+      const head = await this.call('HEAD', url, {}, undefined, REV_LIMIT);
+      const headers = Object.fromEntries(Object.entries(head.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
+      const length = headers['content-length'];
+      const size = /^\d+$/.test(length || '') ? Number(length) : NaN;
+      if (head.status !== 200 || !Number.isSafeInteger(size) || size < 0) {
+        // Desktop previously needed only GET. Missing HEAD support keeps that
+        // compatibility, with the engine reserving the full per-file upper bound.
+        if (this.request.requiresBlobHead) throw new Error('手机同步需要服务器支持 HEAD 并返回 Content-Length；请检查 WebDAV 直连地址。');
+        return null;
+      }
+      const limit = Math.min(BLOB_LIMIT, this.request.blobLimit ?? BLOB_LIMIT);
+      if (size > limit) throw new Error(this.request.requiresBlobHead ? '手机单个文件或响应超过 128 MiB；已暂停同步。' : '单个附件超过 WebDAV 的 512 MiB 限制。');
+      const reservations = this.blobPreflights.get(id) || [];
+      reservations.push({ url: url.href, status: head.status, headers, size });
+      this.blobPreflights.set(id, reservations);
+      return size;
+    } catch (error) { this.clearBlobPreflights(); throw error; }
+  }
+  async getBlob(id, expectedSize) {
+    if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > BLOB_LIMIT)) {
+      throw new Error('Invalid blob size reservation');
+    }
+    const reservations = this.blobPreflights.get(id) || [];
+    // HEADs for a shared blob can finish out of order. Match the caller's own
+    // reservation, and consume only that entry; later batches keep their slots.
+    const index = expectedSize === undefined ? 0 : reservations.findIndex(entry => entry.size === expectedSize);
+    const preflight = index >= 0 ? reservations.splice(index, 1)[0] : undefined;
+    if (!reservations.length) this.blobPreflights.delete(id);
+    try {
+      const limit = expectedSize ?? preflight?.size ?? BLOB_LIMIT;
+      const bytes = await this.read(this.objectURL(id, '.blob'), limit, false, preflight);
+      if (preflight && bytes.byteLength !== preflight.size) throw new Error('WebDAV 附件大小与预检不符；已停止同步。');
+      if (await this.hashOf(bytes) !== id) throw integrity();
+      this.verifiedBlobs.add(id);
+      return bytes;
+    } catch (error) { this.clearBlobPreflights(); throw error; }
   }
   async putBlob(id, data) {
     checkHash(id);
@@ -362,6 +402,7 @@ class DavRemote {
     this.revisions.set(snapshot.id, snapshot);
   }
   async listRevisions() {
+    this.clearBlobPreflights();
     const listing = await this.propfind(this.folder, 1, true);
     if (listing === null) {
       if (this.revisions.size || this.created) throw new Error('远端版本目录消失；已停止同步。');
@@ -408,6 +449,7 @@ module.exports = { DavRemote, NAMESPACE, checkedRevision };
 const { indexRevisions, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
+const { parallel } = require('./sharded');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -458,7 +500,9 @@ function snapshot(revisions) {
 }
 
 class SyncEngine {
-  constructor({ remote, local, state, device }) {
+  constructor({ remote, local, state, device, concurrency = 4 }) {
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Transfer concurrency must be between 1 and 4');
+    this.concurrency = concurrency;
     this.remote = remote;
     this.local = local;
     this.state = state;
@@ -684,8 +728,8 @@ class SyncEngine {
     return hashOf(value);
   }
 
-  async _read(physical) {
-    const data = await this.local.read(physical);
+  async _read(physical, limit) {
+    const data = await this.local.read(physical, limit);
     if (data !== null && !this.local.tracksStats) this.stats.vaultReads++;
     return data;
   }
@@ -792,47 +836,93 @@ class SyncEngine {
     await this._push(s, selected, path, tips, data, result);
   }
 
+  * _batches(items) {
+    const budget = this.local.transferBudget || 128 * 1024 * 1024;
+    let batch = [], total = 0;
+    for (const item of items) {
+      if (batch.length && (batch.length >= this.concurrency || total + item.size > budget)) {
+        yield batch; batch = []; total = 0;
+      }
+      batch.push(item); total += item.size;
+      // A single oversized or unknown-size body reserves the whole channel.
+      if (item.size > budget) { yield batch; batch = []; total = 0; }
+    }
+    if (batch.length) yield batch;
+  }
+
   async _capture(s, before, result, deferred) {
     const listed = this.full ? await this.local.list() : [...this.dirty];
     const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
-    const readAhead = new Map();
-    // Detect file/folder, case and Unicode collisions before publishing new filenames.
+    const sizes = new Map();
+    const sizeOf = async name => {
+      if (!sizes.has(name)) sizes.set(name, this.local.size ? await this.local.size(name) : undefined);
+      const size = sizes.get(name);
+      if (size !== undefined && size !== null && (!Number.isSafeInteger(size) || size < 0 || size > MAX_BYTES)) throw new Error('Invalid or oversized local file: ' + name);
+      return size;
+    };
+    // Validate all potential new names before publishing. Keep metadata only;
+    // incremental batches of new files must not turn into a whole-vault readAhead.
     const provisional = [];
     for (const name of listed) {
       checkPhysical(name);
       if (!isConflictPath(name) && !before.files.has(name)) {
         if (!this.full) {
-          const data = await this._read(name); checkSize(data, name); readAhead.set(name, data);
-          if (data === null) continue;
+          const size = await sizeOf(name);
+          if (size === null) continue;
+          if (size === undefined) {
+            const value = await this._read(name); checkSize(value, name);
+            if (value === null) continue;
+          }
         }
         provisional.push(makeRevision({ path: name, parents: [], blob: '0'.repeat(64), device: this.device }));
       }
     }
     if (provisional.length) project([...s.revs.values(), ...provisional]);
+    const candidates = [];
     for (const physical of paths) {
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
-      const data = readAhead.has(physical) ? readAhead.get(physical) : await this._read(physical);
-      checkSize(data, physical);
-      const hash = await this._hash(data);
-      this.observed.set(physical, hash);
-      if (base) {
-        if (hash !== base.blob) {
-          if (s.splitJournal && this._rebindDescendant(s, before, physical, base, hash)) await this._checkpointProgress(s);
-          else await this._push(s, physical, base.path, base.parents, data, result);
+      const size = await sizeOf(physical);
+      candidates.push({ physical, base, size: size === undefined ? MAX_BYTES : size === null ? 0 : size });
+    }
+    for (const batch of this._batches(candidates)) {
+      try {
+        await parallel(batch, async row => {
+          this.local.checkActive?.();
+          row.data = await this._read(row.physical, row.size); checkSize(row.data, row.physical);
+          if (row.data !== null && row.data.byteLength > row.size) throw new Error('Local file grew beyond reserved size: ' + row.physical);
+          row.hash = await this._hash(row.data);
+          this.observed.set(row.physical, row.hash);
+        }, this.concurrency);
+        const pushes = [];
+        for (const row of batch) {
+          const { physical, base, hash, data } = row;
+          if (base) {
+            if (hash !== base.blob) {
+              if (s.splitJournal && this._rebindDescendant(s, before, physical, base, hash)) await this._checkpointProgress(s);
+              else pushes.push({ ...row, path: base.path, parents: base.parents });
+            }
+          } else if (data !== null) {
+            const remote = before.files.get(physical);
+            if (remote && hash === remote.blob) {
+              if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
+            } else if (isConflictPath(physical)) deferred.add(physical);
+            else pushes.push({ ...row, path: physical, parents: s.absent.get(physical) || [] });
+          }
         }
-        continue;
-      }
-      if (data === null) continue;
-      const remote = before.files.get(physical);
-      if (remote && hash === remote.blob) {
-        if (this._bind(s, physical, remote)) await this._checkpointProgress(s); // Fresh device with identical content.
-      } else if (isConflictPath(physical)) {
-        // A generated copy without a recorded owner cannot safely become a new logical note.
-        deferred.add(physical);
-      } else {
-        // Independent roots preserve different pre-existing files on the first sync.
-        await this._push(s, physical, physical, s.absent.get(physical) || [], data, result);
+        // Content-addressed blobs are safe to pre-upload. Revision publication,
+        // journals and acknowledgements below remain strictly serial.
+        await parallel(pushes.filter(row => row.data !== null), async row => {
+          this.local.checkActive?.();
+          await this.remote.putBlob(row.hash, row.data);
+        }, this.concurrency);
+        for (const row of pushes) {
+          this.local.checkActive?.();
+          await this._push(s, row.physical, row.path, row.parents, row.data, result);
+          row.data = null;
+        }
+      } finally {
+        for (const row of batch) row.data = null;
       }
     }
     await this._save(s);
@@ -840,6 +930,7 @@ class SyncEngine {
 
   async _apply(s, nextView, result, deferred) {
     const paths = new Set([...nextView.files.keys(), ...s.files.keys()]);
+    const plans = [];
     for (const physical of paths) {
       if (deferred.has(physical)) continue;
       const old = s.files.get(physical);
@@ -853,38 +944,66 @@ class SyncEngine {
         if (this._bind(s, physical, next)) await this._checkpointProgress(s);
         continue;
       }
-      if (actual !== expected) {
-        deferred.add(physical);
-        continue;
-      }
-      const data = next ? await this.remote.getBlob(wanted) : null;
-      if (await this._hash(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
+      if (actual !== expected) { deferred.add(physical); continue; }
       const deletionIds = old && physical === old.path && nextView.versions.get(old.path)?.size === 1
         ? nextView.versions.get(old.path).get(null) : null;
       const absent = !next && deletionIds ? { path: old.path, parents: deletionIds } : null;
       const known = next?.parents || nextView.tips.get(old?.path) || [];
-      s.pending = { kind: 'apply', physical, next,
-        ...(s.splitJournal && s.receiptSupported ? { absent, known } : {}) };
-      await this._beginPending(s);
-      const applied = await this.local.compareAndSet(physical, expected, data);
-      if (applied) {
-        this.observed.set(physical, wanted);
-        this._bind(s, physical, next);
-        if (absent) this._setAbsent(s, absent.path, absent.parents);
-        await this._completeOperation(s, next, absent, known);
-        if (next) result.downloaded++;
-        else result.deleted++;
-      } else {
-        this.observed.delete(physical);
-        deferred.add(physical); // The editor changed it after the scan. Capture on next sync.
+      plans.push({ physical, next, expected, wanted, absent, known, size: 0 });
+    }
+    // HEADs transfer metadata only, in the same bounded pool. The remote passes
+    // each preflight to the subsequent GET instead of issuing another HEAD.
+    await parallel(plans.filter(row => row.next), async row => {
+      this.local.checkActive?.();
+      const size = this.remote.getBlobSize ? await this.remote.getBlobSize(row.wanted) : null;
+      if (size !== null && (!Number.isSafeInteger(size) || size < 0 || size > MAX_BYTES)) throw new Error('Invalid remote blob size');
+      row.size = size === null ? MAX_BYTES : size;
+    }, this.concurrency);
+    for (const batch of this._batches(plans)) {
+      try {
+        await parallel(batch, async row => {
+          this.local.checkActive?.();
+          row.data = row.next ? await this.remote.getBlob(row.wanted, row.size) : null;
+          if (row.data !== null && row.data.byteLength > row.size) throw new Error('Downloaded content exceeds reserved size: ' + row.physical);
+          if (await this._hash(row.data) !== row.wanted) throw new Error('Downloaded content checksum mismatch for ' + row.physical);
+        }, this.concurrency);
+        // All completed payloads stay charged to this batch until CAS and journal
+        // acknowledgement finish. No next batch starts while these bytes are held.
+        for (const row of batch) {
+          const { physical, next, expected, wanted, absent, known, data } = row;
+          this.local.checkActive?.();
+          s.pending = { kind: 'apply', physical, next,
+            ...(s.splitJournal && s.receiptSupported ? { absent, known } : {}) };
+          await this._beginPending(s);
+          const applied = await this.local.compareAndSet(physical, expected, data);
+          if (applied) {
+            this.observed.set(physical, wanted);
+            this._bind(s, physical, next);
+            if (absent) this._setAbsent(s, absent.path, absent.parents);
+            await this._completeOperation(s, next, absent, known);
+            if (next) result.downloaded++;
+            else result.deleted++;
+          } else {
+            this.observed.delete(physical);
+            deferred.add(physical); // An editor change after the scan must survive.
+          }
+          await this._finishPending(s);
+          await this._checkpointProgress(s);
+          row.data = null;
+        }
+      } finally {
+        for (const row of batch) row.data = null;
       }
-      await this._finishPending(s);
-      await this._checkpointProgress(s);
     }
     await this._save(s);
   }
 
   async _run(selected, options = {}) {
+    try { return await this._runOnce(selected, options); }
+    finally { this.remote.clearBlobPreflights?.(); }
+  }
+
+  async _runOnce(selected, options = {}) {
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
@@ -1008,8 +1127,10 @@ function readBytes(file, limit = Infinity) {
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error('目标不是普通文件：' + path.basename(file));
-    if (stat.size > limit) throw new Error('文件超过 512 MiB：' + path.basename(file));
-    return fs.readFileSync(fd);
+    if (stat.size > limit) throw new Error((limit < 512 * 1024 * 1024 ? '文件大小在同步期间变化；请重试：' : '文件超过 512 MiB：') + path.basename(file));
+    const data = fs.readFileSync(fd);
+    if (data.byteLength > limit) throw new Error('文件大小在读取期间变化；请重试：' + path.basename(file));
+    return data;
   } finally { fs.closeSync(fd); }
 }
 
@@ -1148,6 +1269,7 @@ class DiskVault {
     this.guard = guard;
     this.hashCache = new Map();
     this.tracksStats = true;
+    this.transferBudget = 128 * 1024 * 1024;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
     }
@@ -1198,7 +1320,14 @@ class DiskVault {
     return data;
   }
   hashOf(value) { return hash(value, this.stats); }
-  async read(name) { return this.readFile(this.filePath(name), 512 * 1024 * 1024); }
+  async read(name, limit = 512 * 1024 * 1024) { return this.readFile(this.filePath(name), Math.min(512 * 1024 * 1024, limit)); }
+  async size(name) {
+    const stat = statMaybe(this.filePath(name));
+    if (!stat) return null;
+    if (!stat.isFile()) throw new Error('笔记不是普通文件：' + name);
+    if (stat.size > 512 * 1024 * 1024) throw new Error('文件超过 512 MiB：' + name);
+    return stat.size;
+  }
 
   beginRound({ deep = false } = {}) { if (deep) this.hashCache.clear(); }
 
@@ -1467,18 +1596,20 @@ function mobileRequest(requestUrl, active = () => true) {
     if (request.stats) request.stats.httpRequests++;
     return requestUrl(args);
   };
-  const request = async ({ url, method, headers, body, limit }) => {
+  const request = async ({ url, method, headers, body, limit, preflight }) => {
     if (!active()) throw mobileError('MOBILE_PAUSED');
     const nativeHeaders = { ...headers };
     delete nativeHeaders['Content-Length']; delete nativeHeaders['Accept-Encoding'];
+    let expectedLength = null;
     // requestUrl has no streaming reader. Check size before allocating a blob.
     if (method === 'GET' && url.pathname.endsWith('.blob')) {
-      const head = await send({ url: url.href, method: 'HEAD', headers: nativeHeaders, throw: false });
+      const head = preflight?.url === url.href ? preflight : await send({ url: url.href, method: 'HEAD', headers: nativeHeaders, throw: false });
       const h = Object.fromEntries(Object.entries(head.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
       if (head.status !== 404) {
         if (head.status !== 200 || !/^\d+$/.test(h['content-length'] || '')) throw mobileError('MOBILE_HEAD_REQUIRED');
         if (Number(h['content-length']) > Math.min(limit, MOBILE_LIMIT)) throw mobileError('MOBILE_TOO_LARGE');
         const size = Number(h['content-length']);
+        expectedLength = size;
         if (size > DOWNLOAD_CHUNK) {
           const assembled = new Uint8Array(size);
           for (let start = 0; start < size; start += DOWNLOAD_CHUNK) {
@@ -1506,13 +1637,15 @@ function mobileRequest(requestUrl, active = () => true) {
     const response = await send({ url: url.href, method, headers: nativeHeaders,
       ...(body === undefined ? {} : { body: arrayBuffer(body) }), throw: false });
     if (!active()) throw mobileError('MOBILE_PAUSED');
-    if (!(response.arrayBuffer instanceof ArrayBuffer) || response.arrayBuffer.byteLength > Math.min(limit, MOBILE_LIMIT)) {
-      throw mobileError('MOBILE_TOO_LARGE');
-    }
+    if (!(response.arrayBuffer instanceof ArrayBuffer)) throw mobileError('MOBILE_TOO_LARGE');
+    if (response.status === 200 && expectedLength !== null && response.arrayBuffer.byteLength !== expectedLength) throw mobileError('MOBILE_RANGE_INVALID');
+    if (response.arrayBuffer.byteLength > Math.min(limit, MOBILE_LIMIT)) throw mobileError('MOBILE_TOO_LARGE');
     return { status: response.status, body: bytes(response.arrayBuffer),
       headers: Object.fromEntries(Object.entries(response.headers || {}).map(([k,v]) => [k.toLowerCase(),v])) };
   };
   request.tracksStats = true;
+  request.requiresBlobHead = true;
+  request.blobLimit = MOBILE_LIMIT;
   return request;
 }
 
@@ -1538,10 +1671,10 @@ class AdapterIO {
     const stat = knownStat === undefined ? await this.adapter.stat(path) : knownStat;
     if (!stat) return null;
     if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + path);
-    if (stat.size > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
+    if (stat.size > limit) throw new Error((limit < MOBILE_LIMIT ? '文件大小在同步期间变化；请重试：' : '手机单个文件上限为 128 MiB：') + path);
     const value = bytes(await this.adapter.readBinary(path));
     if (this.stats && this.privateDir && !path.startsWith(this.privateDir + '/')) this.stats.vaultReads++;
-    if (value.length > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
+    if (value.length > limit) throw new Error((limit < MOBILE_LIMIT ? '文件大小在同步期间变化；请重试：' : '手机单个文件上限为 128 MiB：') + path);
     return value;
   }
   // The destination must be absent. Adapter.copy is documented to fail on existing files.
@@ -1739,6 +1872,7 @@ class MobileVault extends AdapterIO {
     super(adapter);
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') throw new Error('不支持这个 Obsidian 配置目录。');
     this.tracksStats = true;
+    this.transferBudget = 32 * 1024 * 1024;
     this.configDir = configDir; this.guard = guard; this.active = active;
     this.privateDir = configDir + '/plugins/obsidian-webdav-versions/local-state';
     this.transaction = this.privateDir + '/mobile-transaction';
@@ -1758,7 +1892,16 @@ class MobileVault extends AdapterIO {
     return name;
   }
   checkActive() { if (!this.active()) throw new Error('同步已暂停；请返回 Obsidian 前台。'); }
-  async read(name) { this.checkActive(); return super.read(this.path(name)); }
+  async read(name, limit = MOBILE_LIMIT) { this.checkActive(); return super.read(this.path(name), Math.min(MOBILE_LIMIT, limit)); }
+  async size(name) {
+    this.checkActive(); this.path(name);
+    const stat = this.statHints.has(name) ? this.statHints.get(name) : await this.adapter.stat(name);
+    if (!stat) return null;
+    if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + name);
+    if (!Number.isSafeInteger(stat.size) || stat.size < 0) throw new Error('本地文件大小无效：' + name);
+    if (stat.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + name);
+    return stat.size;
+  }
   beginRound({ deep = false } = {}) {
     this.statHints.clear();
     this.deep = deep;
@@ -2479,7 +2622,7 @@ async function mkdir(remote, url) {
 class ShardedStore extends DavRemote {
   constructor(options, legacy) {
     super(options); this.folder=new URL(V2_NAMESPACE+'/',this.base); this.legacy=legacy;
-    this.buckets=new Set();
+    this.buckets=new Set(); this.bucketPromises=new Map();
   }
   objectURL(id,suffix) {
     if (!/^[a-f0-9]{64}$/.test(id) || !['.json','.blob'].includes(suffix)) throw new Error('无效的对象标识。');
@@ -2494,7 +2637,15 @@ class ShardedStore extends DavRemote {
   async immutable(url,data,type,limit,verify) {
     const name=url.pathname.slice(this.folder.pathname.length).split('/')[0];
     if (!HEX.test(name)) throw new Error('无效的分目录对象路径。');
-    if (!this.buckets.has(name)) {await mkdir(this,new URL(name+'/',this.folder));this.buckets.add(name);}
+    if (!this.buckets.has(name)) {
+      let creating=this.bucketPromises.get(name);
+      if (!creating) {
+        creating=mkdir(this,new URL(name+'/',this.folder)).then(()=>this.buckets.add(name));
+        this.bucketPromises.set(name,creating);
+      }
+      try { await creating; }
+      finally { if(this.bucketPromises.get(name)===creating)this.bucketPromises.delete(name); }
+    }
     return super.immutable(url,data,type,limit,verify);
   }
   async inventory({ syncing = false } = {}) {
@@ -2524,6 +2675,7 @@ class ShardedStore extends DavRemote {
     return objects;
   }
   async listRevisions() {
+    this.clearBlobPreflights();
     const objects=await this.inventory({ syncing: true });
     const leftovers=await this.legacy.propfind(this.legacy.folder,1,true);
     if(leftovers && [...leftovers].some(([name,dir])=>name!==MARKER || dir)) {
@@ -2566,6 +2718,7 @@ class AdaptiveDavRemote {
   }
   probe() {return this.legacy.probe();}
   async listRevisions() {
+    this.clearBlobPreflights();
     try {
       // A v1 selection must still notice another device beginning migration.
       // A missing v2 collection implies both metadata GETs would be 404.
@@ -2579,7 +2732,9 @@ class AdaptiveDavRemote {
       throw error;
     }
   }
-  async getBlob(id) {return (this.selected||await this.select()).getBlob(id);}
+  clearBlobPreflights() { this.legacy.clearBlobPreflights(); this.sharded.clearBlobPreflights(); }
+  async getBlobSize(id) {return (this.selected||await this.select()).getBlobSize(id);}
+  async getBlob(id,expectedSize) {return (this.selected||await this.select()).getBlob(id,expectedSize);}
   async putBlob(id,data) {return (this.selected||await this.select()).putBlob(id,data);}
   async putRevision(rev) {return (this.selected||await this.select()).putRevision(rev);}
 }
