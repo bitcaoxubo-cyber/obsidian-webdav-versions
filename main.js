@@ -86,7 +86,7 @@ const { digest, validateRevision } = require('./protocol');
 const NAMESPACE = 'obsidian-webdav-versions-v1';
 const HASH = /^[0-9a-f]{64}$/;
 const DAV = 'DAV:';
-const XML_LIMIT = 128 * 1024 * 1024;
+const XML_LIMIT = 32 * 1024 * 1024;
 const REV_LIMIT = 1024 * 1024;
 const BLOB_LIMIT = 512 * 1024 * 1024;
 const PROPFIND = bytes('<propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>');
@@ -325,6 +325,7 @@ class DavRemote {
       return [];
     }
     this.created = true;
+    if (listing.size >= 10000) throw new Error('WebDAV 单目录清单达到 10000 项，可能被服务器截断；请升级为分目录存储。未清空同步历史。');
     const ids = [];
     for (const [name, collection] of listing) {
       const match = /^([a-f0-9]{64})\.(json|blob)$/.exec(name);
@@ -352,7 +353,7 @@ class DavRemote {
   }
 }
 
-module.exports = { DavRemote, NAMESPACE };
+module.exports = { DavRemote, NAMESPACE, checkedRevision };
 
 },
 "engine":function(module,exports,require){
@@ -908,6 +909,154 @@ class DiskVault {
 module.exports = { DiskState, DiskVault };
 
 },
+"migration":function(module,exports,require){
+'use strict';
+const { DavRemote, checkedRevision } = require('./dav');
+const { bytes, digest, randomUUID } = require('./bytes');
+const { project } = require('./protocol');
+const { ShardedStore, FORMAT_TEXT, MARKER, HASH_NAME, REV_LIMIT, parallel, validFormat, mkdir } = require('./sharded');
+const BLOB_LIMIT = 512 * 1024 * 1024;
+const PROGRESS_TEXT = JSON.stringify({version:2,state:'migration',layout:'sha256-prefix-1'});
+
+async function putMarker(remote,url,content) {
+  await remote.immutable(url,bytes(content),'application/json',REV_LIMIT,data=>{
+    if(digest(data)!==digest(content)) throw new Error('迁移标记与预期不符。');
+  });
+}
+function verifyObject(name,data) {
+  const match=HASH_NAME.exec(name);
+  if(!match) throw new Error('无效的同步对象名称。');
+  if(match[2]==='json') return checkedRevision(data,match[1]);
+  if(digest(data)!==match[1]) throw new Error('迁移对象的内容校验失败；对象仍保留在远端。');
+  return null;
+}
+async function move(remote,source,destination) {
+  if(source.origin!==remote.base.origin || destination.origin!==remote.base.origin) throw new Error('拒绝跨站迁移。');
+  const result=await remote.call('MOVE',source,{Destination:destination.href,Overwrite:'F'},undefined,REV_LIMIT);
+  if(![201,204].includes(result.status)) throw new Error('远端移动未确认：HTTP '+result.status+'；保留迁移记录后重试。');
+}
+
+// Explicit maintenance operation. Call only after all clients have paused sync.
+// No DELETE is issued: each original object is moved intact; duplicate copies
+// are archived. Record identities, parent links, payload bytes and local state stay unchanged.
+async function migrateStorage(options,{knownIds=[],saveRevision,checkpoint=async()=>{},progress=()=>{}}={}) {
+  if(typeof saveRevision!=='function') throw new Error('必须先准备版本记录的本地备份回调。');
+  const legacy=new DavRemote(options), target=new ShardedStore(options,legacy);
+  await legacy.probe();
+  if(await legacy.propfind(legacy.folder,0,true)===null) throw new Error('旧版本目录不存在，不能推测迁移来源。');
+  const existing=await legacy.read(new URL('format.json',target.folder),REV_LIMIT,true);
+  if(existing!==null) {
+    if(!validFormat(existing)) throw new Error('远端已有不支持的格式。');
+    const rows=await target.listRevisions();
+    return {alreadyComplete:true,revisions:rows.length,moved:0};
+  }
+  if(await legacy.read(new URL('rollback.json',target.folder),REV_LIMIT,true)!==null) throw new Error('远端回退未完成。');
+  await mkdir(legacy,target.folder);
+  await putMarker(legacy,new URL('migration.json',target.folder),PROGRESS_TEXT);
+  await putMarker(legacy,new URL(MARKER,legacy.folder),PROGRESS_TEXT);
+  let moved=0,duplicates=0,passes=0;
+  const verified=new Set();
+  const created=new Map();
+  const ensureBucket=bucket=>{
+    if(!created.has(bucket)) created.set(bucket,mkdir(legacy,new URL(bucket+'/',target.folder)));
+    return created.get(bucket);
+  };
+  const duplicateFolder=new URL('obsidian-webdav-versions-v1-duplicates/',legacy.base);
+  for (;;) {
+    if(++passes>10000) throw new Error('旧客户端持续写入，迁移已暂停。');
+    const listing=await legacy.propfind(legacy.folder,1);
+    const names=[];
+    for(const [name,dir] of listing) {
+      if(name===MARKER&&!dir) continue;
+      if(dir||!HASH_NAME.test(name)) throw new Error('旧目录有未知条目；未移动该条目。');
+      names.push(name);
+    }
+    if(!names.length) break;
+    // Drain a bounded batch. The next listing exposes entries hidden behind the cap.
+    await parallel(names.slice(0,256),async name=>{
+      const match=HASH_NAME.exec(name),limit=match[2]==='json'?REV_LIMIT:BLOB_LIMIT;
+      const source=new URL(name,legacy.folder), destination=target.objectURL(match[1],'.'+match[2]);
+      await ensureBucket(match[1][0]);
+      if(match[2]==='json') {
+        const data=await legacy.read(source,limit);verifyObject(name,data);await saveRevision(name,data);
+      }
+      const prior=await legacy.read(destination,limit,true);
+      if(prior!==null) {
+        verifyObject(name,prior);
+        // Preserve a duplicate left by an old in-flight writer, without deleting it.
+        const original=await legacy.read(source,limit);verifyObject(name,original);
+        if(digest(original)!==digest(prior)) throw new Error('同名迁移对象存在内容差异。');
+        await mkdir(legacy,duplicateFolder);
+        const archivedName=randomUUID()+'-'+name;
+        await move(legacy,source,new URL(archivedName,duplicateFolder));
+        const archived=await legacy.read(new URL(archivedName,duplicateFolder),limit);
+        if(digest(archived)!==digest(original)) throw new Error('重复对象归档校验失败。');
+        duplicates++;
+        await checkpoint({name,archive:archivedName,verified:true});
+      } else {
+        await move(legacy,source,destination);
+        verifyObject(name,await legacy.read(destination,limit));
+        await checkpoint({name,verified:true});
+      }
+      verified.add(name);moved++;progress({phase:'moving',moved,duplicates,passes});
+    },2);
+  }
+  const objects=await target.inventory();
+  // After an interrupted MOVE the source may already be absent. Reverify every
+  // destination not verified in this process before declaring migration complete.
+  await parallel([...objects.keys()].filter(n=>n.endsWith('.blob')&&!verified.has(n)),async name=>{
+    verifyObject(name,await legacy.read(objects.get(name),BLOB_LIMIT));
+  },2);
+  const rows=[];
+  await parallel([...objects.keys()].filter(n=>n.endsWith('.json')),async name=>{
+    const data=await legacy.read(objects.get(name),REV_LIMIT);
+    rows.push(verifyObject(name,data));await saveRevision(name,data);
+  });
+  const ids=new Set(rows.map(r=>r.id));
+  if(knownIds.some(id=>!ids.has(id))) throw new Error('迁移后仍缺少本机已确认的版本；未发布新格式。');
+  project(rows); // Parent closure, path collisions and revision hashes must all hold.
+  for(const row of rows) if(row.blob!==null&&!objects.has(row.blob+'.blob')) throw new Error('迁移后附件不完整；未发布新格式。');
+  const finalLegacy=await legacy.propfind(legacy.folder,1);
+  if([...finalLegacy.keys()].some(name=>name!==MARKER)) throw new Error('旧客户端仍在写入；请暂停后重试迁移。');
+  await putMarker(legacy,new URL('format.json',target.folder),FORMAT_TEXT);
+  const result={version:2,moved,duplicates,revisions:rows.length,objects:objects.size,passes};
+  await checkpoint({complete:true,...result});progress({phase:'complete',...result});
+  return result;
+}
+
+async function rollbackStorage(options,{checkpoint=async()=>{},progress=()=>{}}={}) {
+  const legacy=new DavRemote(options), target=new ShardedStore(options,legacy);
+  if(await legacy.propfind(target.folder,0,true)===null) return {alreadyRolledBack:true};
+  await mkdir(legacy,legacy.folder);
+  await putMarker(legacy,new URL('rollback.json',target.folder),JSON.stringify({version:2,state:'rollback'}));
+  const objects=await target.inventory();let moved=0;
+  const archive=new URL('obsidian-webdav-layout-backup-'+randomUUID()+'/',legacy.base);
+  // All objects are enumerated from small buckets; the flat destination may be capped.
+  await parallel([...objects],async([name,source])=>{
+    const limit=name.endsWith('.json')?REV_LIMIT:BLOB_LIMIT;
+    const data=await legacy.read(source,limit);verifyObject(name,data);
+    const destination=new URL(name,legacy.folder);
+    const existing=await legacy.read(destination,limit,true);
+    if(existing!==null) {
+      if(digest(existing)!==digest(data)) throw new Error('旧路径已有不同内容，回退已暂停。');
+      // Keep the duplicate in the layout archive when that directory is moved below.
+    } else {
+      await move(legacy,source,destination);
+      if(digest(await legacy.read(destination,limit))!==digest(data)) throw new Error('回退对象校验失败。');
+    }
+    moved++;await checkpoint({name,restored:true});progress({phase:'rollback',moved});
+  },2);
+  // Archive metadata and empty directories, never recursively delete remote data.
+  await move(legacy,target.folder,archive);
+  if(await legacy.read(new URL(MARKER,legacy.folder),REV_LIMIT,true)!==null) {
+    await move(legacy,new URL(MARKER,legacy.folder),new URL('v1-marker.json',archive));
+  }
+  return {restored:moved,archivedLayout:true};
+}
+
+module.exports={migrateStorage,rollbackStorage,verifyObject};
+
+},
 "mobile":function(module,exports,require){
 'use strict';
 const { bytes, text, arrayBuffer, digest, randomUUID } = require('./bytes');
@@ -1206,7 +1355,7 @@ const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platf
 const { text } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
-const { DavRemote } = require('./dav');
+const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');
@@ -1584,6 +1733,125 @@ function project(revisions) {
 }
 
 module.exports = { makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
+
+},
+"sharded":function(module,exports,require){
+'use strict';
+const { DavRemote, checkedRevision } = require('./dav');
+const { bytes, text, digest } = require('./bytes');
+const V2_NAMESPACE = 'obsidian-webdav-versions-v2';
+const FORMAT = { version: 2, layout: 'sha256-prefix-1' };
+const FORMAT_TEXT = JSON.stringify(FORMAT);
+const MARKER = 'storage-v2.json';
+const REV_LIMIT = 1024 * 1024;
+const HASH_NAME = /^([a-f0-9]{64})\.(json|blob)$/;
+const HEX = /^[a-f0-9]$/;
+
+async function parallel(items, action, count = 4) {
+  let next = 0, error;
+  await Promise.all(Array.from({length:Math.min(count,items.length)},async()=>{
+    while (!error && next < items.length) {
+      const item=items[next++];
+      try { await action(item); } catch(e) { error ||= e; }
+    }
+  }));
+  if (error) throw error;
+}
+function validFormat(data) {
+  try { const f=JSON.parse(text(data)); return f.version===2 && f.layout==='sha256-prefix-1' && Object.keys(f).length===2; }
+  catch { return false; }
+}
+async function mkdir(remote, url) {
+  if (await remote.propfind(url,0,true)!==null) return;
+  const r=await remote.call('MKCOL',url,{},undefined,REV_LIMIT);
+  if (![200,201,204,405].includes(r.status)) throw new Error('无法创建分目录存储：HTTP '+r.status);
+  await remote.propfind(url,0);
+}
+
+class ShardedStore extends DavRemote {
+  constructor(options, legacy) {
+    super(options); this.folder=new URL(V2_NAMESPACE+'/',this.base); this.legacy=legacy;
+    this.buckets=new Set();
+  }
+  objectURL(id,suffix) {
+    if (!/^[a-f0-9]{64}$/.test(id) || !['.json','.blob'].includes(suffix)) throw new Error('无效的对象标识。');
+    return new URL(id[0]+'/'+id+suffix,this.folder);
+  }
+  async ensureFolder() {
+    const format=await this.read(new URL('format.json',this.folder),REV_LIMIT,true);
+    if (!format || !validFormat(format)) throw new Error('远端分目录存储尚未完成迁移。');
+    this.created=true;
+  }
+  async immutable(url,data,type,limit,verify) {
+    const name=url.pathname.slice(this.folder.pathname.length).split('/')[0];
+    if (!HEX.test(name)) throw new Error('无效的分目录对象路径。');
+    if (!this.buckets.has(name)) {await mkdir(this,new URL(name+'/',this.folder));this.buckets.add(name);}
+    return super.immutable(url,data,type,limit,verify);
+  }
+  async inventory() {
+    const root=await this.propfind(this.folder,1);
+    const buckets=[];
+    for(const [name,dir] of root) {
+      if(dir && HEX.test(name)) buckets.push(name);
+      else if(!dir && ['format.json','migration.json','rollback.json'].includes(name)) continue;
+      else throw new Error('分目录存储存在未知条目；已暂停。');
+    }
+    const objects=new Map();
+    await parallel(buckets,async bucket=>{
+      const listed=await this.propfind(new URL(bucket+'/',this.folder),1);
+      if(listed.size>=10000) throw new Error('分目录清单达到 10000 项；请扩展分桶后继续。');
+      for(const [name,dir] of listed) {
+        const m=HASH_NAME.exec(name);
+        if(dir || !m || m[1][0]!==bucket || objects.has(name)) throw new Error('分目录对象路径无效或重复。');
+        objects.set(name,new URL(bucket+'/'+name,this.folder));
+      }
+      this.buckets.add(bucket);
+    });
+    return objects;
+  }
+  async listRevisions() {
+    const rollback=await this.read(new URL('rollback.json',this.folder),REV_LIMIT,true);
+    if(rollback!==null) throw new Error('远端正在回退存储布局；已暂停。');
+    const leftovers=await this.legacy.propfind(this.legacy.folder,1,true);
+    if(leftovers && [...leftovers].some(([name,dir])=>name!==MARKER || dir)) {
+      throw new Error('旧目录仍有同步对象；请暂停旧客户端并完成迁移，避免遗漏旧端写入。');
+    }
+    const objects=await this.inventory();
+    const ids=[...objects.keys()].filter(n=>n.endsWith('.json')).map(n=>n.slice(0,-5));
+    for(const id of this.revisions.keys()) if(!objects.has(id+'.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
+    await parallel(ids.filter(id=>!this.revisions.has(id)),async id=>{
+      this.revisions.set(id,checkedRevision(await this.read(objects.get(id+'.json'),REV_LIMIT),id));
+    });
+    const result=ids.map(id=>this.revisions.get(id));
+    for(const rev of result) if(rev.blob!==null&&!objects.has(rev.blob+'.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
+    return structuredClone(result);
+  }
+}
+
+class AdaptiveDavRemote {
+  constructor(options) {
+    this.options=options;this.legacy=new DavRemote(options);this.sharded=new ShardedStore(options,this.legacy);
+    this.selected=null;
+  }
+  async select() {
+    const r=this.legacy, folder=this.sharded.folder;
+    if(await r.read(new URL('rollback.json',folder),REV_LIMIT,true)!==null) throw new Error('远端正在回退存储布局；已暂停。');
+    const format=await r.read(new URL('format.json',folder),REV_LIMIT,true);
+    if(format!==null) {
+      if(!validFormat(format)) throw new Error('不支持的远端存储格式。');
+      this.selected=this.sharded;return this.selected;
+    }
+    if(await r.propfind(folder,0,true)!==null) throw new Error('远端分目录存储迁移未完成；请完成迁移或回退。');
+    this.selected=this.legacy;return this.selected;
+  }
+  probe() {return this.legacy.probe();}
+  async listRevisions() {return (await this.select()).listRevisions();}
+  async getBlob(id) {return (this.selected||await this.select()).getBlob(id);}
+  async putBlob(id,data) {return (this.selected||await this.select()).putBlob(id,data);}
+  async putRevision(rev) {return (this.selected||await this.select()).putRevision(rev);}
+}
+
+module.exports={AdaptiveDavRemote,ShardedStore,V2_NAMESPACE,FORMAT,FORMAT_TEXT,MARKER,HASH_NAME,REV_LIMIT,parallel,validFormat,mkdir};
 
 },
 "vendor/sax":function(module,exports,require){

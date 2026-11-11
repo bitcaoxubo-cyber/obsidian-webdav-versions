@@ -5,7 +5,7 @@ const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platf
 const { text } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
-const { DavRemote } = require('./dav');
+const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');

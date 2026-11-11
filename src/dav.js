@@ -9,7 +9,7 @@ const { digest, validateRevision } = require('./protocol');
 const NAMESPACE = 'obsidian-webdav-versions-v1';
 const HASH = /^[0-9a-f]{64}$/;
 const DAV = 'DAV:';
-const XML_LIMIT = 128 * 1024 * 1024;
+const XML_LIMIT = 32 * 1024 * 1024;
 const REV_LIMIT = 1024 * 1024;
 const BLOB_LIMIT = 512 * 1024 * 1024;
 const PROPFIND = bytes('<propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>');
@@ -248,6 +248,7 @@ class DavRemote {
       return [];
     }
     this.created = true;
+    if (listing.size >= 10000) throw new Error('WebDAV 单目录清单达到 10000 项，可能被服务器截断；请升级为分目录存储。未清空同步历史。');
     const ids = [];
     for (const [name, collection] of listing) {
       const match = /^([a-f0-9]{64})\.(json|blob)$/.exec(name);
@@ -275,4 +276,4 @@ class DavRemote {
   }
 }
 
-module.exports = { DavRemote, NAMESPACE };
+module.exports = { DavRemote, NAMESPACE, checkedRevision };
