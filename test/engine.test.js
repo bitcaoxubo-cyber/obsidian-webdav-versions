@@ -236,3 +236,15 @@ test('A0: sync returns numeric per-round runtime statistics', async () => {
   assert.ok(first.stats.vaultReads > 0);
   assert.ok(first.stats.hashBytes >= 5);
 });
+
+for (const withHash of [false, true]) test('A2: idle observes each local path once, hash hint=' + withHash, async () => {
+  const r = store(), c = client(r, 'cache');
+  for (let i = 0; i < 5; i++) c.write(`note-${i}.md`, 'content-' + i);
+  await c.e.sync();
+  const visits = new Map(), read = c.local.read.bind(c.local);
+  c.local.read = async p => { visits.set(p, (visits.get(p) || 0) + 1); return read(p); };
+  if (withHash) c.local.hash = async p => { visits.set(p, (visits.get(p) || 0) + 1); const b = c.local.data.get(p); return b ? digest(b) : null; };
+  await c.e.sync();
+  assert.equal(visits.size, 5);
+  assert.ok([...visits.values()].every(n => n === 1));
+});

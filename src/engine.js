@@ -131,6 +131,11 @@ class SyncEngine {
     return this.local.hash ? this.local.hash(physical) : this._hash(await this._read(physical));
   }
 
+  async _observedHash(physical) {
+    if (!this.observed.has(physical)) this.observed.set(physical, await this._localHash(physical));
+    return this.observed.get(physical);
+  }
+
   async _ackPush(s, result) {
     const { rev, physical, bytes, staged } = s.pending;
     validateRevision(rev);
@@ -151,6 +156,7 @@ class SyncEngine {
     s.pending = null;
     await this._save(s);
     if (staged) await this.state.clearStaged(rev.blob);
+    this.local.invalidate?.(physical); // Refresh the persistent hint from the saved file at flush.
     result.uploaded++;
   }
 
@@ -170,6 +176,7 @@ class SyncEngine {
     }
     await this._save(s);
     await this._ackPush(s, result);
+    this.observed.set(physical, rev.blob);
   }
 
   async _recover(s, result) {
@@ -220,10 +227,11 @@ class SyncEngine {
     if (provisional.length) project([...s.revs.values(), ...provisional]);
     for (const physical of paths) {
       const base = s.files.get(physical);
-      if (base && this.local.hash && await this._localHash(physical) === base.blob) continue;
+      if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
       const data = await this._read(physical);
       checkSize(data, physical);
       const hash = await this._hash(data);
+      this.observed.set(physical, hash);
       if (base) {
         if (hash !== base.blob) await this._push(s, physical, base.path, base.parents, data, result);
         continue;
@@ -251,7 +259,7 @@ class SyncEngine {
       const next = nextView.files.get(physical) || null;
       const expected = old?.blob ?? null;
       const wanted = next?.blob ?? null;
-      const actual = await this._localHash(physical);
+      const actual = await this._observedHash(physical);
       if (actual === wanted) {
         this._bind(s, physical, next);
         continue;
@@ -266,10 +274,12 @@ class SyncEngine {
       await this._save(s);
       const applied = await this.local.compareAndSet(physical, expected, data);
       if (applied) {
+        this.observed.set(physical, wanted);
         this._bind(s, physical, next);
         if (next) result.downloaded++;
         else result.deleted++;
       } else {
+        this.observed.delete(physical);
         deferred.add(physical); // The editor changed it after the scan. Capture on next sync.
       }
       s.pending = null;
@@ -281,6 +291,7 @@ class SyncEngine {
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
+    this.observed = new Map();
     this.local.stats = this.state.stats = result.stats;
     if (this.remote.setStats) this.remote.setStats(result.stats);
     else {
@@ -304,7 +315,7 @@ class SyncEngine {
       if (!deferred.has(path)) {
         if (versions.size === 1 && versions.has(null)) {
           // A later local recreation acknowledges only deletions already observed here.
-          if (await this._localHash(path) === null) s.absent.set(path, versions.get(null));
+          if (await this._observedHash(path) === null) s.absent.set(path, versions.get(null));
         } else if (s.files.has(path)) {
           s.absent.delete(path);
         }

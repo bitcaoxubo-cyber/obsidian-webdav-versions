@@ -1,0 +1,62 @@
+✔ offline edits survive blind simultaneous writes, converge, and explicitly resolve an edited main (10.755958ms)
+✔ different pre-existing files, equal mtimes, preserve both; aliases can win resolution (1.866042ms)
+✔ binary / empty attachments preserve bytes; deleting one side while editing the other keeps surviving work (4.63525ms)
+✔ lost response after commit reuses original staged bytes and revision across restart (0.797375ms)
+✔ pull defers changes written in editor during download, captures them as concurrent work next sync (1.279291ms)
+✔ crash after local CAS before journal acknowledgement does not republish the downloaded revision (1.295709ms)
+✔ missing previously listed history fails closed after restart; corrupt incoming blobs leave local file intact (1.092584ms)
+✔ resolution refuses unpublished sibling edits and rejects unreviewed remote content (1.54025ms)
+✔ equal independent heads are captured together after being displayed as a single file (1.026584ms)
+✔ foreign conflict-like filenames survive without accidental publication (0.229584ms)
+✔ recreate after a witnessed deletion descends from its tombstone; an unseen deletion stays concurrent (1.715959ms)
+✔ unchanged vault uses stat-backed hash hint without reading attachment bodies (0.370292ms)
+✔ remote deletion defers a local edit during local compare-and-set (0.966667ms)
+✔ disk staging keeps binary bodies out of journal JSON, survives offline edits, clears only after acknowledgement (0.521875ms)
+✔ oversized file is rejected before hashing, writing a journal or publishing (0.152ms)
+✔ A0: sync returns numeric per-round runtime statistics (0.35425ms)
+✖ A2: idle observes each local path once, hash hint=false (3.12925ms)
+✖ A2: idle observes each local path once, hash hint=true (1.803ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 16
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 69.351625
+
+✖ failing tests:
+
+test at test/engine.test.js:240:39
+✖ A2: idle observes each local path once, hash hint=false (3.12925ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok([...visits.values()].every(n => n === 1))
+  
+      at TestContext.<anonymous> (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/test/engine.test.js:249:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/engine.test.js:240:39
+✖ A2: idle observes each local path once, hash hint=true (1.803ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok([...visits.values()].every(n => n === 1))
+  
+      at TestContext.<anonymous> (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/test/engine.test.js:249:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
