@@ -2,7 +2,7 @@
 
 const { indexRevisions, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
-const { base64, fromBase64, sha256 } = require('./bytes');
+const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -70,9 +70,117 @@ class SyncEngine {
     return result;
   }
 
+  _snapshot(s) {
+    return { version: 1, known: [...s.known], files: [...s.files],
+      reviewed: [...s.reviewed], absent: [...s.absent], pending: s.splitJournal ? null : s.pending,
+      ...(s.receiptSupported ? { receiptSequence: s.receiptSequence } : {}) };
+  }
+
   async _save(s) {
-    await this.state.save({ version: 1, known: [...s.known], files: [...s.files],
-      reviewed: [...s.reviewed], absent: [...s.absent], pending: s.pending });
+    // Serialization happens only at a checkpoint, never for each split journal.
+    // Legacy/test state implementations retain their original per-operation save.
+    if (!s.splitJournal || s.changed) {
+      const snapshot = this._snapshot(s);
+      const serialized = JSON.stringify(snapshot);
+      if (!s.splitJournal || serialized !== s.savedSnapshot) {
+        await this.state.save(snapshot);
+        s.savedSnapshot = serialized;
+      }
+      s.changed = false;
+    }
+    // The watermark is durable before cleanup starts. A crash during cleanup
+    // leaves only stale receipts, which loadReceipts skips on the next start.
+    if (s.receiptSupported && s.receiptsNeedCleanup) {
+      await this.state.clearReceipts(s.receiptSequence);
+      s.receiptsNeedCleanup = false;
+    }
+    s.sinceCheckpoint = 0;
+    s.checkpointAt = Date.now();
+  }
+
+  async _beginPending(s) {
+    if (s.splitJournal && s.receiptSupported) s.pending.operationId = randomUUID();
+    if (s.splitJournal) await this.state.savePending(s.pending);
+    else await this._save(s);
+  }
+
+  async _finishPending(s) {
+    const pending = s.pending;
+    s.pending = null;
+    if (s.splitJournal) {
+      // A storage adapter implementing only the optional pending API cannot
+      // discard that journal before the new binding has its own durable record.
+      if (!s.receiptSupported || !pending.operationId) await this._save(s);
+      await this.state.clearPending();
+    } else await this._save(s);
+  }
+
+  _validateReceipt(s, entry) {
+    if (!entry || !['push', 'apply'].includes(entry.kind) || typeof entry.operationId !== 'string' || !entry.operationId ||
+        !Array.isArray(entry.known) || !entry.known.length) throw new Error('Invalid completion receipt');
+    checkPhysical(entry.physical);
+    for (const id of entry.known) if (!s.revs.has(id)) throw new Error('Completion receipt references missing remote revision: ' + id);
+    const next = entry.next;
+    if (next !== null) {
+      if (!next || typeof next !== 'object') throw new Error('Invalid completion receipt binding');
+      safePath(next.path);
+      if (!Array.isArray(next.parents) || !next.parents.length || !next.parents.every(id => {
+        const r = s.revs.get(id); return r && r.path === next.path && r.blob === next.blob;
+      })) throw new Error('Completion receipt binding does not match remote revisions');
+    }
+    if (entry.absent !== null) {
+      const absent = entry.absent;
+      if (!absent || typeof absent !== 'object') throw new Error('Invalid completion receipt deletion');
+      safePath(absent.path);
+      if (entry.physical !== absent.path || next !== null || !Array.isArray(absent.parents) || !absent.parents.length || !absent.parents.every(id => {
+        const r = s.revs.get(id); return r && r.path === absent.path && r.blob === null;
+      })) throw new Error('Completion receipt deletion does not match remote revisions');
+    }
+  }
+
+  _applyReceipt(s, entry) {
+    this._validateReceipt(s, entry);
+    this._bind(s, entry.physical, entry.next);
+    if (entry.absent) this._setAbsent(s, entry.absent.path, entry.absent.parents);
+    else if (entry.next && entry.physical === entry.next.path) this._setAbsent(s, entry.next.path, null);
+    for (const id of entry.known) {
+      if (!s.known.has(id)) { s.known.add(id); s.changed = true; }
+    }
+  }
+
+  async _replayReceipts(s) {
+    if (!s.receiptSupported) return;
+    const receipts = await this.state.loadReceipts(s.receiptSequence);
+    if (s.legacyPending && receipts.length) throw new Error('Legacy pending and completion receipts overlap; retain local-state and stop');
+    for (const { sequence, entry } of receipts) {
+      if (!Number.isSafeInteger(sequence) || sequence !== s.receiptSequence + 1 || s.completedOperations.has(entry?.operationId)) {
+        throw new Error('Invalid completion receipt ordering');
+      }
+      this._applyReceipt(s, entry);
+      s.completedOperations.add(entry.operationId);
+      s.receiptSequence = sequence;
+      s.changed = true;
+    }
+    s.receiptsNeedCleanup = true;
+  }
+
+  async _completeOperation(s, next, absent, known) {
+    if (!s.splitJournal || !s.receiptSupported || !s.pending.operationId) return;
+    const entry = { operationId: s.pending.operationId, kind: s.pending.kind, physical: s.pending.physical,
+      next, absent, known };
+    this._validateReceipt(s, entry);
+    const sequence = await this.state.saveReceipt(entry);
+    if (sequence !== s.receiptSequence + 1) throw new Error('Unexpected completion receipt sequence');
+    s.receiptSequence = sequence;
+    s.completedOperations.add(entry.operationId);
+    s.changed = true;
+    s.receiptsNeedCleanup = true;
+  }
+
+  async _checkpointProgress(s) {
+    if (!s.splitJournal) return;
+    s.sinceCheckpoint++;
+    if (s.sinceCheckpoint >= 200 || Date.now() - s.checkpointAt >= 5000) await this._save(s);
   }
 
   async _open() {
@@ -81,8 +189,19 @@ class SyncEngine {
         !Array.isArray(disk.files) || !Array.isArray(disk.reviewed))) {
       throw new Error('Invalid sync state; the vault has not been changed');
     }
+    const splitSupported = ['loadPending', 'savePending', 'clearPending'].every(name => typeof this.state[name] === 'function');
+    const receiptSupported = splitSupported && ['loadReceipts', 'saveReceipt', 'clearReceipts'].every(name => typeof this.state[name] === 'function');
+    const receiptSequence = disk?.receiptSequence ?? 0;
+    if (!Number.isSafeInteger(receiptSequence) || receiptSequence < 0) throw new Error('Invalid completion receipt watermark');
+    const independent = splitSupported ? await this.state.loadPending() : null;
+    const embedded = disk?.pending ?? null;
+    if (embedded && independent) throw new Error('Both legacy and independent sync journals are present; retain local-state and stop');
     const s = { known: new Set(disk?.known), files: new Map(disk?.files),
-      reviewed: new Map(disk?.reviewed), absent: new Map(disk?.absent), pending: disk?.pending ?? null, revs: new Map() };
+      reviewed: new Map(disk?.reviewed), absent: new Map(disk?.absent), pending: embedded || independent,
+      revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
+      changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
+      receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false };
+    s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
       s.revs.set(r.id, r);
@@ -106,15 +225,53 @@ class SyncEngine {
         return r && r.path === path && r.blob === null;
       })) throw new Error('Invalid deletion baseline for ' + path);
     }
+    // Restore completed local ancestry before recording newly discovered remote
+    // history or advancing the checkpoint watermark.
+    await this._replayReceipts(s);
     const discovered = s.revs.size !== s.known.size;
     s.known = new Set(s.revs.keys());
-    if (discovered) await this._save(s);
+    if (discovered) { s.changed = true; await this._save(s); }
     return s;
   }
 
   _bind(s, physical, binding) {
-    if (binding) s.files.set(physical, binding);
-    else s.files.delete(physical);
+    const previous = s.files.get(physical);
+    if (binding) {
+      if (previous && previous.path === binding.path && previous.blob === binding.blob && sameIds(previous.parents, binding.parents)) return false;
+      s.files.set(physical, binding);
+    } else if (!s.files.delete(physical)) return false;
+    s.changed = true;
+    return true;
+  }
+
+  _setAbsent(s, path, ids) {
+    if (ids) {
+      if (sameIds(s.absent.get(path) || [], ids)) return;
+      s.absent.set(path, ids);
+    } else if (!s.absent.delete(path)) return;
+    s.changed = true;
+  }
+
+  _rebindDescendant(s, before, physical, base, hash) {
+    // A completed operation can outlive the last checkpoint after its separate
+    // journal was cleared. Recover only a leaf acknowledging every old parent;
+    // matching bytes on an unrelated branch must remain concurrent work.
+    for (const id of before.tips.get(base.path) || []) {
+      const leaf = s.revs.get(id);
+      if (leaf.blob !== hash) continue;
+      const needed = new Set(base.parents), visited = new Set(), pending = [id];
+      while (pending.length && needed.size) {
+        const next = pending.pop();
+        if (visited.has(next)) continue;
+        visited.add(next); needed.delete(next);
+        pending.push(...s.revs.get(next).parents);
+      }
+      if (needed.size) continue;
+      this._bind(s, physical, hash === null ? null : { path: base.path, blob: hash, parents: [id] });
+      if (hash === null && physical === base.path) this._setAbsent(s, physical, [id]);
+      return true;
+    }
+    return false;
   }
 
   async _hash(value) {
@@ -151,14 +308,16 @@ class SyncEngine {
     // A retry always publishes the exact same document and identifier.
     await this.remote.putRevision(rev);
     s.revs.set(rev.id, rev);
-    s.known.add(rev.id);
+    if (!s.known.has(rev.id)) { s.known.add(rev.id); s.changed = true; }
     this._bind(s, physical, rev.blob === null ? null : { path: rev.path, blob: rev.blob, parents: [rev.id] });
-    if (physical === rev.path && rev.blob === null) s.absent.set(physical, [rev.id]);
-    s.pending = null;
-    await this._save(s);
+    const absent = physical === rev.path && rev.blob === null ? { path: physical, parents: [rev.id] } : null;
+    if (absent) this._setAbsent(s, physical, absent.parents);
+    await this._completeOperation(s, rev.blob === null ? null : { path: rev.path, blob: rev.blob, parents: [rev.id] }, absent, [rev.id]);
+    await this._finishPending(s);
     if (staged) await this.state.clearStaged(rev.blob);
     this.local.invalidate?.(physical); // Refresh the persistent hint from the saved file at flush.
     result.uploaded++;
+    await this._checkpointProgress(s);
   }
 
   async _push(s, physical, path, parents, data, result) {
@@ -166,7 +325,7 @@ class SyncEngine {
     const rev = makeRevision({ path, parents, blob: await this._hash(data), device: this.device });
     // Check that a new conflict, including its generated filename, is representable before publication.
     project([...s.revs.values()].filter(r => r.path === path).concat(rev));
-    s.reviewed.delete(path);
+    if (s.reviewed.delete(path)) s.changed = true;
     s.pending = { kind: 'push', physical, rev };
     if (data !== null && this.state.stageBlob && this.state.readStaged && this.state.clearStaged) {
       // Write bytes first. Once the journal is durable, retry needs neither the open editor nor its file.
@@ -175,13 +334,22 @@ class SyncEngine {
     } else if (data !== null) {
       s.pending.bytes = base64(data);
     }
-    await this._save(s);
+    await this._beginPending(s);
     await this._ackPush(s, result);
     this.observed.set(physical, rev.blob);
   }
 
   async _recover(s, result) {
     if (!s.pending) return;
+    if (s.pending.operationId && s.completedOperations.has(s.pending.operationId)) {
+      // Completion already has an exact durable baseline. Do not reinterpret an
+      // editor change after that completion through the older pending intent.
+      const { kind, staged, rev, physical } = s.pending;
+      await this._finishPending(s);
+      if (kind === 'push' && staged) await this.state.clearStaged(rev.blob);
+      this.local.invalidate?.(physical);
+      return;
+    }
     if (s.pending.kind === 'push') return this._ackPush(s, result);
     if (s.pending.kind !== 'apply') throw new Error('Unknown sync journal entry');
     const { physical, next } = s.pending;
@@ -189,9 +357,14 @@ class SyncEngine {
     const actual = await this._localHash(physical);
     // The local CAS may have completed immediately before the crash. A subsequent user edit
     // does not match the staged result; keep its earlier baseline for conservative capture.
-    if (actual === (next?.blob ?? null)) this._bind(s, physical, next);
-    s.pending = null;
-    await this._save(s);
+    if (actual === (next?.blob ?? null)) {
+      this._bind(s, physical, next);
+      const absent = s.pending.absent || null;
+      if (absent) this._setAbsent(s, absent.path, absent.parents);
+      await this._completeOperation(s, next, absent, s.pending.known || next?.parents || []);
+    }
+    await this._finishPending(s);
+    await this._checkpointProgress(s);
   }
 
   async _resolve(s, selected, before, result) {
@@ -239,13 +412,16 @@ class SyncEngine {
       const hash = await this._hash(data);
       this.observed.set(physical, hash);
       if (base) {
-        if (hash !== base.blob) await this._push(s, physical, base.path, base.parents, data, result);
+        if (hash !== base.blob) {
+          if (s.splitJournal && this._rebindDescendant(s, before, physical, base, hash)) await this._checkpointProgress(s);
+          else await this._push(s, physical, base.path, base.parents, data, result);
+        }
         continue;
       }
       if (data === null) continue;
       const remote = before.files.get(physical);
       if (remote && hash === remote.blob) {
-        this._bind(s, physical, remote); // Fresh device with identical content.
+        if (this._bind(s, physical, remote)) await this._checkpointProgress(s); // Fresh device with identical content.
       } else if (isConflictPath(physical)) {
         // A generated copy without a recorded owner cannot safely become a new logical note.
         deferred.add(physical);
@@ -269,7 +445,7 @@ class SyncEngine {
       if (!this.full && !this.dirty.has(physical) && expected === wanted) continue;
       const actual = await this._observedHash(physical);
       if (actual === wanted) {
-        this._bind(s, physical, next);
+        if (this._bind(s, physical, next)) await this._checkpointProgress(s);
         continue;
       }
       if (actual !== expected) {
@@ -278,21 +454,29 @@ class SyncEngine {
       }
       const data = next ? await this.remote.getBlob(wanted) : null;
       if (await this._hash(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
-      s.pending = { kind: 'apply', physical, next };
-      await this._save(s);
+      const deletionIds = old && physical === old.path && nextView.versions.get(old.path)?.size === 1
+        ? nextView.versions.get(old.path).get(null) : null;
+      const absent = !next && deletionIds ? { path: old.path, parents: deletionIds } : null;
+      const known = next?.parents || nextView.tips.get(old?.path) || [];
+      s.pending = { kind: 'apply', physical, next,
+        ...(s.splitJournal && s.receiptSupported ? { absent, known } : {}) };
+      await this._beginPending(s);
       const applied = await this.local.compareAndSet(physical, expected, data);
       if (applied) {
         this.observed.set(physical, wanted);
         this._bind(s, physical, next);
+        if (absent) this._setAbsent(s, absent.path, absent.parents);
+        await this._completeOperation(s, next, absent, known);
         if (next) result.downloaded++;
         else result.deleted++;
       } else {
         this.observed.delete(physical);
         deferred.add(physical); // The editor changed it after the scan. Capture on next sync.
       }
-      s.pending = null;
-      await this._save(s);
+      await this._finishPending(s);
+      await this._checkpointProgress(s);
     }
+    await this._save(s);
   }
 
   async _run(selected, options = {}) {
@@ -313,6 +497,9 @@ class SyncEngine {
     await this.local.recover?.();
     const s = await this._open();
     await this._recover(s, result);
+    // Finish an old embedded intent through its original durable snapshot path
+    // before subsequent operations start using the independent pending file.
+    if (s.legacyPending) { s.legacyPending = false; s.splitJournal = true; }
     const before = snapshot(s.revs);
     if (selected !== undefined) {
       await this._resolve(s, selected, before, result);
@@ -323,26 +510,29 @@ class SyncEngine {
     await this._capture(s, captureView, result, deferred);
     const after = s.revs.size === capturedRevisionCount ? captureView : snapshot(s.revs);
     await this._apply(s, after, result, deferred);
-    s.reviewed.clear();
+    const reviewed = new Map();
     for (const [path, versions] of after.versions) {
       if (!deferred.has(path)) {
         if (versions.size === 1 && versions.has(null)) {
           // A later local recreation acknowledges only deletions already observed here.
           const ids = versions.get(null);
           if (!this.full && !this.dirty.has(path) && sameIds(s.absent.get(path) || [], ids)) continue;
-          if (await this._observedHash(path) === null) s.absent.set(path, ids);
+          if (await this._observedHash(path) === null) this._setAbsent(s, path, ids);
         } else if (s.files.has(path)) {
-          s.absent.delete(path);
+          this._setAbsent(s, path, null);
         }
       }
       if (versions.size > 1) {
         result.conflictPaths.push(path);
-        s.reviewed.set(path, after.tips.get(path));
+        reviewed.set(path, after.tips.get(path));
       }
     }
     for (const physical of deferred) {
       const path = after.files.get(physical)?.path ?? s.files.get(physical)?.path ?? physical;
-      s.reviewed.delete(path);
+      reviewed.delete(path);
+    }
+    if (s.reviewed.size !== reviewed.size || [...reviewed].some(([path, ids]) => !sameIds(s.reviewed.get(path) || [], ids))) {
+      s.reviewed = reviewed; s.changed = true;
     }
     result.conflictPaths.sort();
     result.conflicts = result.conflictPaths.length;

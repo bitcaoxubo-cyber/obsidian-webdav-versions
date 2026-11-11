@@ -1,0 +1,92 @@
+✖ B1: completed receipts are ordered and continue above the durable checkpoint watermark (1.068125ms)
+✖ B1: receipt publication survives a crash before acknowledgement without reusing its sequence (0.133208ms)
+✖ B1: an incomplete receipt temporary write is never replayed (0.112292ms)
+✖ B1: a committed receipt checksum and sequence gap are validated before replay (0.0975ms)
+✖ B1: successful checkpoint watermark makes partial receipt cleanup safe and repeatable (0.10875ms)
+✖ B1: stale receipt bytes below the checkpoint watermark cannot block or affect replay (0.078041ms)
+✖ B1: desktop completion receipts are durable, ordered and cleared only through the checkpoint (3.520292ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 0
+ℹ fail 7
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 38.516584
+
+✖ failing tests:
+
+test at test/state-receipts.test.js:10:1
+✖ B1: completed receipts are ordered and continue above the durable checkpoint watermark (1.068125ms)
+  TypeError [Error]: s.loadReceipts is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:12:28)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+
+test at test/state-receipts.test.js:20:1
+✖ B1: receipt publication survives a crash before acknowledgement without reusing its sequence (0.133208ms)
+  TypeError [Error]: s.loadReceipts is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:21:62)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+
+test at test/state-receipts.test.js:28:1
+✖ B1: an incomplete receipt temporary write is never replayed (0.112292ms)
+  TypeError [Error]: s.saveReceipt is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:31:26)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-receipts.test.js:36:1
+✖ B1: a committed receipt checksum and sequence gap are validated before replay (0.0975ms)
+  TypeError [Error]: s.saveReceipt is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:37:62)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-receipts.test.js:47:1
+✖ B1: successful checkpoint watermark makes partial receipt cleanup safe and repeatable (0.10875ms)
+  TypeError [Error]: s.saveReceipt is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:49:43)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-receipts.test.js:61:1
+✖ B1: stale receipt bytes below the checkpoint watermark cannot block or affect replay (0.078041ms)
+  TypeError [Error]: s.saveReceipt is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:62:62)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-receipts.test.js:69:1
+✖ B1: desktop completion receipts are durable, ordered and cleared only through the checkpoint (3.520292ms)
+  TypeError [Error]: s.loadReceipts is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/state-receipts.test.js:75:33)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)

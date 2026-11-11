@@ -57,11 +57,25 @@ function readBytes(file, limit = Infinity) {
   } finally { fs.closeSync(fd); }
 }
 
+
+function receiptSequence(name) {
+  const match = /^receipt-(\d{16})\.json$/.exec(name);
+  if (!match || !Number.isSafeInteger(Number(match[1])) || Number(match[1]) <= 0) throw new Error('完成日志文件名无效；已停止同步。');
+  return Number(match[1]);
+}
+function checkReceiptWatermark(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('完成日志检查点水位无效；已停止同步。');
+}
+
 class DiskState {
   constructor(directory, url, user) {
     // Bind sync ancestry to both the collection and the account.
     const key = hash(JSON.stringify([new URL(url).href.replace(/\/+$/, ''), user]));
     this.file = path.join(directory, 'state-' + key + '.json');
+    this.pendingFile = path.join(directory, 'pending-' + key + '.json');
+    this.receiptDirectory = path.join(directory, 'completed-' + key);
+    this.receiptSequence = undefined;
+    this.receiptFloor = 0;
     this.staging = path.join(directory, 'outbox-' + key);
   }
   async load() {
@@ -69,6 +83,87 @@ class DiskState {
     return data === null ? null : JSON.parse(data.toString('utf8'));
   }
   async save(value) { atomicWrite(this.file, JSON.stringify(value)); }
+  async loadPending() {
+    const data = readBytes(this.pendingFile);
+    if (data === null) return null;
+    try {
+      const row = JSON.parse(data.toString('utf8'));
+      if (row.version !== 1 || typeof row.payload !== 'string' || hash(row.payload, this.stats) !== row.hash) throw new Error('checksum');
+      const pending = JSON.parse(row.payload);
+      if (!pending || typeof pending !== 'object' || Array.isArray(pending)) throw new Error('payload');
+      return pending;
+    } catch { throw new Error('同步待处理日志损坏；已停止同步。'); }
+  }
+  async savePending(value) {
+    const previous = await this.loadPending();
+    const payload = JSON.stringify(value);
+    if (previous !== null) {
+      if (JSON.stringify(previous) !== payload) throw new Error('仍有未完成的同步日志；请先恢复。');
+      return;
+    }
+    atomicWrite(this.pendingFile, JSON.stringify({ version: 1, payload, hash: hash(payload, this.stats) }));
+  }
+  async clearPending() {
+    fs.rmSync(this.pendingFile, { force: true });
+    syncDir(path.dirname(this.pendingFile));
+  }
+  receiptFiles() {
+    if (!statMaybe(this.receiptDirectory)) return [];
+    safeDir(this.receiptDirectory);
+    const files = [];
+    for (const item of fs.readdirSync(this.receiptDirectory, { withFileTypes: true })) {
+      if (item.name.startsWith('.')) continue; // Interrupted atomicWrite temporary files are not committed.
+      if (!item.isFile()) throw new Error('完成日志不是普通文件；已停止同步。');
+      files.push({ file: path.join(this.receiptDirectory, item.name), sequence: receiptSequence(item.name) });
+    }
+    return files.sort((a,b) => a.sequence - b.sequence);
+  }
+  async loadReceipts(afterSequence = 0) {
+    checkReceiptWatermark(afterSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, afterSequence);
+    this.receiptSequence = undefined;
+    const files = this.receiptFiles(), entries = [];
+    let expected = afterSequence + 1;
+    for (const { file, sequence } of files) {
+      if (sequence <= afterSequence) continue;
+      if (sequence !== expected++) throw new Error('完成日志序号不连续；请保留现场。');
+      try {
+        const data = readBytes(file);
+        if (data === null) throw new Error('missing');
+        const row = JSON.parse(data.toString('utf8'));
+        if (row.version !== 1 || row.sequence !== sequence || typeof row.payload !== 'string' ||
+            hash(JSON.stringify([sequence, row.payload]), this.stats) !== row.hash) throw new Error('checksum');
+        const entry = JSON.parse(row.payload);
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('payload');
+        entries.push({ sequence, entry });
+      } catch { throw new Error('同步完成日志损坏或校验失败；已停止同步。'); }
+    }
+    this.receiptSequence = Math.max(this.receiptFloor, files.at(-1)?.sequence || 0);
+    return entries;
+  }
+  async saveReceipt(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('完成日志内容无效。');
+    const directoryExisted = statMaybe(this.receiptDirectory) !== null;
+    safeDir(this.receiptDirectory, true);
+    if (!directoryExisted) syncDir(path.dirname(this.receiptDirectory));
+    if (this.receiptSequence === undefined) await this.loadReceipts(this.receiptFloor);
+    const sequence = this.receiptSequence + 1;
+    checkReceiptWatermark(sequence);
+    const payload = JSON.stringify(entry);
+    const encoded = JSON.stringify({ version: 1, sequence, payload, hash: hash(JSON.stringify([sequence, payload]), this.stats) });
+    const target = path.join(this.receiptDirectory, 'receipt-' + String(sequence).padStart(16, '0') + '.json');
+    if (statMaybe(target)) throw new Error('完成日志序号已存在；请重新读取同步状态。');
+    try { atomicWrite(target, encoded); this.receiptSequence = sequence; return sequence; }
+    catch (error) { this.receiptSequence = undefined; throw error; }
+  }
+  async clearReceipts(throughSequence) {
+    checkReceiptWatermark(throughSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, throughSequence);
+    if (this.receiptSequence !== undefined) this.receiptSequence = Math.max(this.receiptSequence, throughSequence);
+    const files = this.receiptFiles();
+    for (const { file, sequence } of files) if (sequence <= throughSequence) fs.rmSync(file, { force: true });
+    if (files.length) syncDir(this.receiptDirectory);
+  }
   stagedPath(id) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('无效的待上传内容编号');
     return path.join(this.staging, id);

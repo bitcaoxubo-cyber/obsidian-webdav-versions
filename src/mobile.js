@@ -61,7 +61,7 @@ function mobileRequest(requestUrl, active = () => true) {
 }
 
 class AdapterIO {
-  constructor(adapter) { this.adapter = adapter; }
+  constructor(adapter) { this.adapter = adapter; this.confirmedDirectories = new Set(); }
   async hashOf(value) {
     if (value === null) return null;
     if (this.stats) this.stats.hashBytes += bytes(value).length;
@@ -71,9 +71,11 @@ class AdapterIO {
     let prefix = '';
     for (const part of dir.split('/')) {
       prefix = prefix ? prefix + '/' + part : part;
+      if (this.confirmedDirectories.has(prefix)) continue;
       const stat = await this.adapter.stat(prefix);
       if (!stat) await this.adapter.mkdir(prefix);
       else if (stat.type !== 'folder') throw new Error('同步工作目录被文件占用：' + prefix);
+      this.confirmedDirectories.add(prefix);
     }
   }
   async read(path, limit = MOBILE_LIMIT, knownStat) {
@@ -100,12 +102,26 @@ class AdapterIO {
   }
 }
 
+
+function receiptSequence(name) {
+  const match = /^receipt-(\d{16})\.json$/.exec(name);
+  if (!match || !Number.isSafeInteger(Number(match[1])) || Number(match[1]) <= 0) throw new Error('完成日志文件名无效；已停止同步。');
+  return Number(match[1]);
+}
+function checkReceiptWatermark(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('完成日志检查点水位无效；已停止同步。');
+}
+
 // Two alternating, checksummed snapshots: a killed write cannot destroy the last
 // complete snapshot. Mobile state is intentionally independent from desktop state.
 class MobileState extends AdapterIO {
   constructor(adapter, directory, url, user) {
     super(adapter);
     this.directory = directory + '/mobile-state-' + digest(JSON.stringify([new URL(url).href.replace(/\/+$/, ''), user]));
+    this.pendingFile = this.directory + '/pending.json';
+    this.latest = undefined;
+    this.receiptSequence = undefined;
+    this.receiptFloor = 0;
   }
   async snapshots() {
     const valid = []; let present = 0;
@@ -123,19 +139,119 @@ class MobileState extends AdapterIO {
     if (valid.length !== present) throw new Error('手机同步状态损坏；保留现场并停止同步。');
     return valid.sort((a,b) => b.sequence - a.sequence);
   }
-  async load() { return (await this.snapshots())[0]?.state ?? null; }
+  async load() {
+    const latest = (await this.snapshots())[0];
+    this.latest = latest ? { slot: latest.slot, sequence: latest.sequence } : null;
+    return latest?.state ?? null;
+  }
   async save(value) {
     await this.mkdir(this.directory);
-    const latest = (await this.snapshots())[0];
+    if (this.latest === undefined) await this.load();
+    const latest = this.latest;
     const slot = latest ? 1 - latest.slot : 0;
     const payload = JSON.stringify(value);
     const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: await this.hashOf(payload) });
     const target = this.directory + '/state-' + slot + '.json';
     const tmp = this.directory + '/writing-' + randomUUID();
+    try {
+      await this.writeFresh(tmp, encoded);
+      if (await this.adapter.exists(target)) await this.adapter.remove(target);
+      await this.adapter.rename(tmp, target);
+      this.latest = { slot, sequence: (latest?.sequence || 0) + 1 };
+    } catch (err) {
+      // A failed rename may have completed before its response was lost.
+      this.latest = undefined;
+      throw err;
+    }
+  }
+  async loadPending() {
+    const data = await this.read(this.pendingFile);
+    if (data === null) return null;
+    try {
+      const row = JSON.parse(text(data));
+      if (row.version !== 1 || typeof row.payload !== 'string' || await this.hashOf(row.payload) !== row.hash) throw new Error('checksum');
+      const pending = JSON.parse(row.payload);
+      if (!pending || typeof pending !== 'object' || Array.isArray(pending)) throw new Error('payload');
+      return pending;
+    } catch { throw new Error('手机同步待处理日志损坏；已停止同步。'); }
+  }
+  async savePending(value) {
+    await this.mkdir(this.directory);
+    const previous = await this.loadPending();
+    const payload = JSON.stringify(value);
+    if (previous !== null) {
+      if (JSON.stringify(previous) !== payload) throw new Error('仍有未完成的同步日志；请先恢复。');
+      return;
+    }
+    const encoded = JSON.stringify({ version: 1, payload, hash: await this.hashOf(payload) });
+    const tmp = this.directory + '/pending-writing-' + randomUUID();
     await this.writeFresh(tmp, encoded);
-    if (await this.adapter.exists(target)) await this.adapter.remove(target);
-    await this.adapter.rename(tmp, target);
-    if (text(await this.read(target)) !== encoded) throw new Error('手机同步状态写入校验失败。');
+    await this.adapter.rename(tmp, this.pendingFile);
+  }
+  async clearPending() {
+    if (await this.adapter.exists(this.pendingFile)) await this.adapter.remove(this.pendingFile);
+  }
+  async receiptFiles() {
+    const stat = await this.adapter.stat(this.directory);
+    if (!stat) return [];
+    if (stat.type !== 'folder') throw new Error('同步工作目录被文件占用：' + this.directory);
+    const listing = await this.adapter.list(this.directory), files = [];
+    for (const file of [...listing.files, ...listing.folders]) {
+      if (!file.startsWith(this.directory + '/') || file.slice(this.directory.length + 1).includes('/')) throw new Error('完成日志目录清单无效。');
+      const name = file.slice(this.directory.length + 1);
+      if (!name.startsWith('receipt-') || name.startsWith('receipt-writing-')) continue;
+      if (listing.folders.includes(file)) throw new Error('完成日志被目录占用。');
+      files.push({ file, sequence: receiptSequence(name) });
+    }
+    return files.sort((a,b) => a.sequence - b.sequence);
+  }
+  async loadReceipts(afterSequence = 0) {
+    checkReceiptWatermark(afterSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, afterSequence);
+    this.receiptSequence = undefined;
+    const files = await this.receiptFiles(), entries = [];
+    let expected = afterSequence + 1;
+    for (const { file, sequence } of files) {
+      if (sequence <= afterSequence) continue; // Durable checkpoint supersedes any leftover cleanup bytes.
+      if (sequence !== expected++) throw new Error('完成日志序号不连续；请保留现场。');
+      try {
+        const data = await this.read(file);
+        if (data === null) throw new Error('missing');
+        const row = JSON.parse(text(data));
+        if (row.version !== 1 || row.sequence !== sequence || typeof row.payload !== 'string' ||
+            await this.hashOf(JSON.stringify([sequence, row.payload])) !== row.hash) throw new Error('checksum');
+        const entry = JSON.parse(row.payload);
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('payload');
+        entries.push({ sequence, entry });
+      } catch { throw new Error('同步完成日志损坏或校验失败；已停止同步。'); }
+    }
+    this.receiptSequence = Math.max(this.receiptFloor, files.at(-1)?.sequence || 0);
+    return entries;
+  }
+  async saveReceipt(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('完成日志内容无效。');
+    await this.mkdir(this.directory);
+    if (this.receiptSequence === undefined) await this.loadReceipts(this.receiptFloor);
+    const sequence = this.receiptSequence + 1;
+    checkReceiptWatermark(sequence);
+    const payload = JSON.stringify(entry);
+    const encoded = JSON.stringify({ version: 1, sequence, payload, hash: await this.hashOf(JSON.stringify([sequence, payload])) });
+    const target = this.directory + '/receipt-' + String(sequence).padStart(16, '0') + '.json';
+    const tmp = this.directory + '/receipt-writing-' + randomUUID();
+    try {
+      await this.writeFresh(tmp, encoded);
+      await this.adapter.rename(tmp, target);
+      this.receiptSequence = sequence;
+      return sequence;
+    } catch (error) { this.receiptSequence = undefined; throw error; }
+  }
+  async clearReceipts(throughSequence) {
+    checkReceiptWatermark(throughSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, throughSequence);
+    if (this.receiptSequence !== undefined) this.receiptSequence = Math.max(this.receiptSequence, throughSequence);
+    for (const { file, sequence } of await this.receiptFiles()) {
+      if (sequence <= throughSequence) await this.adapter.remove(file);
+    }
   }
   blobPath(id) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('无效的待上传内容编号。');

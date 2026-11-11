@@ -1,0 +1,119 @@
+✖ B1: mobile pending journal survives restart independently of snapshot (4.621375ms)
+✖ B1: mobile pending journal rejects corruption instead of forgetting intent (0.613583ms)
+✖ B1: interrupted pending temporary write leaves previous durable intent intact (0.351917ms)
+✖ B1: pending is recoverable when process exits immediately after publication (0.2055ms)
+✖ B1: pending temporary partial write never becomes a committed journal (0.231583ms)
+✖ B1: mobile checkpoints do not reread committed slots during consecutive saves (2.043167ms)
+✔ B1: incomplete checkpoint write preserves the latest complete slot (1.08625ms)
+✖ B1: confirmed directory checks are cached without losing file collision checks (0.855458ms)
+✖ B1: desktop pending journal is independent, durable and idempotently cleared (14.240292ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 1
+ℹ fail 8
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 58.263209
+
+✖ failing tests:
+
+test at test/state-perf.test.js:11:1
+✖ B1: mobile pending journal survives restart independently of snapshot (4.621375ms)
+  TypeError [Error]: s.savePending is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:14:11)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+
+test at test/state-perf.test.js:21:1
+✖ B1: mobile pending journal rejects corruption instead of forgetting intent (0.613583ms)
+  TypeError [Error]: s.savePending is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:22:62)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+
+test at test/state-perf.test.js:27:1
+✖ B1: interrupted pending temporary write leaves previous durable intent intact (0.351917ms)
+  TypeError [Error]: s.savePending is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:29:11)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-perf.test.js:34:1
+✖ B1: pending is recoverable when process exits immediately after publication (0.2055ms)
+  TypeError [Error]: s.savePending is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:37:26)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-perf.test.js:42:1
+✖ B1: pending temporary partial write never becomes a committed journal (0.231583ms)
+  TypeError [Error]: s.savePending is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:47:26)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/state-perf.test.js:52:1
+✖ B1: mobile checkpoints do not reread committed slots during consecutive saves (2.043167ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  6 !== 0
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:58:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 6,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/state-perf.test.js:71:1
+✖ B1: confirmed directory checks are cached without losing file collision checks (0.855458ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    Map(3) {
+  +   '.obsidian' => 3,
+  +   '.obsidian/state' => 3,
+  +   '.obsidian/state/mobile-state-bf7b9ceb3ab8391c96b8b652c67bbbc41335fa0a7acfb78d9baf670f72b4bd30' => 3
+  -   '.obsidian' => 2,
+  -   '.obsidian/state' => 2,
+  -   '.obsidian/state/mobile-state-bf7b9ceb3ab8391c96b8b652c67bbbc41335fa0a7acfb78d9baf670f72b4bd30' => 2
+    }
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:76:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: Map(3) { '.obsidian' => 3, '.obsidian/state' => 3, '.obsidian/state/mobile-state-bf7b9ceb3ab8391c96b8b652c67bbbc41335fa0a7acfb78d9baf670f72b4bd30' => 3 },
+    expected: Map(3) { '.obsidian' => 2, '.obsidian/state' => 2, '.obsidian/state/mobile-state-bf7b9ceb3ab8391c96b8b652c67bbbc41335fa0a7acfb78d9baf670f72b4bd30' => 2 },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/state-perf.test.js:81:1
+✖ B1: desktop pending journal is independent, durable and idempotently cleared (14.240292ms)
+  TypeError [Error]: s.savePending is not a function
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-state/test/state-perf.test.js:87:58)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)

@@ -1,0 +1,269 @@
+✖ B1: upload restart after pending preserves both branches without extra revisions (102.4875ms)
+✔ B1: upload restart after blob preserves both branches without extra revisions (37.740042ms)
+✔ B1: upload restart after revision preserves both branches without extra revisions (30.823375ms)
+✖ B1: upload restart after checkpoint-before preserves both branches without extra revisions (29.343042ms)
+✖ B1: upload restart after checkpoint-partial preserves both branches without extra revisions (27.007459ms)
+✖ B1: download restart after pending preserves both branches without extra revisions (17.985875ms)
+✔ B1: download restart after local preserves both branches without extra revisions (16.430875ms)
+✖ B1: download restart after checkpoint-before preserves both branches without extra revisions (13.572084ms)
+✖ B1: download restart after checkpoint-partial preserves both branches without extra revisions (21.837ms)
+✖ B1: later editor change survives upload pending recovery (1.58125ms)
+✔ B1: later editor change survives upload revision recovery (2.97325ms)
+✔ B1: edit after applied download remains concurrent with the downloaded revision (5.369208ms)
+✖ B1: checkpoint recovery accepts a leaf descending from all old parents (1.219833ms)
+✔ B1: checkpoint recovery rejects a leaf descending from only one old parents (0.994917ms)
+✖ B1: upgrade resumes an embedded 0.3.0-beta.1 push pending before using independent pending (1.064208ms)
+✔ B1: upgrade binds an embedded 0.3.0-beta.1 apply pending whose CAS already completed (0.705584ms)
+✔ Prep: benchmark JSON preserves all rounds and accounts for every adapter operation (75.2655ms)
+✔ Prep: benchmark assertions fail closed and latency/round selection remain measurable (173.201292ms)
+✔ Prep: adapter mtimes advance on every file mutation and support recent-time fixtures (0.308292ms)
+✔ built plugin loads and completes native-API sync without Node, Buffer, process or filesystem paths (42.635583ms)
+✔ v1 revision IDs remain compatible with fixed desktop 0.1.1 fixtures (4.674ms)
+✔ two independent desktop clients append divergent histories on weak DAV and read verified bytes (52.426416ms)
+✔ server truncation, wrong GET bytes, missing blob, and successful-looking bad PUT stop sync (18.484375ms)
+✔ 412 is idempotent only when the readback verifies; interrupted writes can be retried (15.163709ms)
+✔ Depth:1 fails closed on truncated XML, wrong namespace, cross-origin paths and partial statuses (12.3275ms)
+✔ credentials stay on the original HTTPS endpoint, failures disclose no response or password (4.775833ms)
+✔ real filesystem vaults keep concurrent Markdown and PDF byte-for-byte through restart, new device, and resolution (1575.648125ms)
+✔ acceptance receipts attest each check without exposing settings and reject stale, mismatched or malformed records (1472.587959ms)
+✔ offline edits survive blind simultaneous writes, converge, and explicitly resolve an edited main (19.279833ms)
+✔ different pre-existing files, equal mtimes, preserve both; aliases can win resolution (5.437041ms)
+✔ binary / empty attachments preserve bytes; deleting one side while editing the other keeps surviving work (5.774458ms)
+✔ lost response after commit reuses original staged bytes and revision across restart (1.924291ms)
+✔ pull defers changes written in editor during download, captures them as concurrent work next sync (3.309ms)
+✔ crash after local CAS before journal acknowledgement does not republish the downloaded revision (2.6025ms)
+✔ missing previously listed history fails closed after restart; corrupt incoming blobs leave local file intact (2.164083ms)
+✔ resolution refuses unpublished sibling edits and rejects unreviewed remote content (3.310333ms)
+✔ equal independent heads are captured together after being displayed as a single file (1.554667ms)
+✔ foreign conflict-like filenames survive without accidental publication (0.260083ms)
+✔ recreate after a witnessed deletion descends from its tombstone; an unseen deletion stays concurrent (3.267583ms)
+✔ unchanged vault uses stat-backed hash hint without reading attachment bodies (1.314375ms)
+✔ remote deletion defers a local edit during local compare-and-set (6.997416ms)
+✔ disk staging keeps binary bodies out of journal JSON, survives offline edits, clears only after acknowledgement (1.681ms)
+✔ oversized file is rejected before hashing, writing a journal or publishing (0.205042ms)
+✔ A0: sync returns numeric per-round runtime statistics (0.435292ms)
+✔ A2: idle observes each local path once, hash hint=false (3.431334ms)
+✔ A2: idle observes each local path once, hash hint=true (6.192209ms)
+✔ A5: incremental sync never lists or observes unchanged clean paths (2.238125ms)
+✔ A5: a missed external edit waits for the next full round (0.872333ms)
+✔ A5: incremental remote changes and tombstones still apply with no scan (2.544209ms)
+✔ A5: clean incremental paths keep ancestry until their bytes are observed (2.127417ms)
+✔ A2/A5: an edit during revision publication remains dirty and uploads on the next incremental round (1.899666ms)
+✔ A2/A5: a local edit during incremental download stays dirty and survives as a concurrent version (3.587042ms)
+✔ A0: mobile metrics count real vault reads and content/state hashing (10.06875ms)
+✔ A0: mobile transport metrics include HEAD and GET without double counting (2.173209ms)
+✔ A0: desktop transport counts one HTTP request per call (0.345375ms)
+✔ A0: desktop native hash reads count only vault content (13.856584ms)
+✔ local CAS guards unsaved editor, preserves exact binary and detects equal-size replacements (52.326959ms)
+✔ unfinished disk replacement survives restart without crossing into configuration or symlinks (12.682375ms)
+✔ lists scientific titles containing colons and skips unbound symlinks, including broken links (30.019ms)
+✔ sync preserves remote history when a tracked path or remote download hits a link (151.719083ms)
+✔ mismatched inode captured during recovery is restored, and scoped state survives restart (33.913417ms)
+✔ portable SHA-256 and encoding match native crypto at block boundaries and large binary inputs (95.958459ms)
+✔ mobile clients restore into an empty vault, preserve offline conflicts and binary attachments, then resolve (19.023875ms)
+✔ interrupted upload retries exact staged bytes after phone restart and later edit (2.19775ms)
+✔ mobile restart recovery at staging (0.543625ms)
+✔ mobile restart recovery at intent (0.430208ms)
+✔ mobile restart recovery at moved (0.494583ms)
+✔ mobile restart recovery at copied (0.981ms)
+✔ mobile restart recovery at cleanup (0.416916ms)
+✔ a concurrent saved edit moved with the original is restored instead of overwritten (0.515791ms)
+✔ exclusive copy preserves a new destination created while applying remote content (0.757584ms)
+✔ unsaved editor, background state, oversized files and hidden paths fail without overwriting notes (0.4805ms)
+✔ state alternation survives an interrupted inactive write and isolates accounts (3.549459ms)
+✔ native HTTP uses ArrayBuffer, preserves DAV error statuses, lowercases headers and preflights large blobs (0.350334ms)
+✔ native HTTP never writes credentials into surfaced transport errors (0.250084ms)
+✔ large mobile downloads assemble verified ranges and reject a truncated segment (150.094416ms)
+✔ corruption of a committed mobile state stops instead of silently forgetting its baseline (0.910333ms)
+✔ A3: asynchronous SHA-256 matches portable digest at boundaries, slices and large inputs (18.347625ms)
+✔ A3: asynchronous SHA-256 uses WebCrypto and falls back when subtle is absent (0.235541ms)
+✔ A1: stable hash cache reuses list stat once per file per round (0.267083ms)
+✔ A1: files inside the two second timestamp window always rehash (0.1435ms)
+✔ A1: cache survives a new MobileVault instance (0.159167ms)
+✔ A1: corrupt cache falls back to hashing and sync still succeeds (1.204833ms)
+✔ A1: changed mtime and content are captured and uploaded (1.443708ms)
+✔ A1: deep validation bypasses even a matching cache signature (0.286958ms)
+✔ A1: compareAndSet always rereads content instead of trusting the cache (0.175791ms)
+✔ A1: flush warms only paths invalidated by local writes (0.288667ms)
+✔ cold clients materialize divergent edits deterministically, then resolve both heads (3.196625ms)
+✔ a concurrent edit survives a deletion; an explicit delete of both removes the local view (0.735167ms)
+✔ equal-content heads share one visible file without losing either causal parent (1.0415ms)
+✔ identical retries reuse an id, with sorted parents, while independent operations get new ids (4.369541ms)
+✔ validates bytes, hashes and parent dependencies before projecting anything (0.991541ms)
+✔ preserves attachment bytes and extension on conflicts (1.251875ms)
+✔ rejects hidden/reserved paths, traversal and ambiguous macOS names (1.032917ms)
+✔ long multibyte stems are shortened only on conflict copies (0.242875ms)
+✔ A4: validated revisions and parent lists are immutable; copies still validate fully (0.220291ms)
+✔ A5: mobile and desktop debounce use 15 and 5 seconds and record both rename paths (1.066041ms)
+✔ A5: successful rounds retain newer events and deferred paths; failure retains every dirty path (0.133292ms)
+✔ A5: first, manual, deep, resolve, foreground, error and ten-minute rounds are full (0.720208ms)
+✔ A5: fake-clock idle polling backs off 60,120,240,300 seconds with at most two full rounds in ten minutes (0.20425ms)
+✔ A5: events reset polling and a foreground request arriving during sync is not acknowledged early (0.094209ms)
+✔ A5: background pauses timers and foreground schedules a full sync within one second (0.112625ms)
+✔ A5: a failed overdue full round waits before retrying instead of spinning at the full deadline (0.077584ms)
+✔ A5: plugin routes file events, deep/manual commands, foreground and failures through the scheduler (4.423917ms)
+✔ a 10000-entry legacy listing stops with an actionable cap error before fetching revisions (102.641416ms)
+✔ migration drains capped listings, preserves every object byte and revision identity, then fresh clients read all histories (14.876792ms)
+✔ a crash after MOVE can resume without forgetting the original IDs or republishing revisions (3.294083ms)
+✔ resume rechecks a corrupt destination left by an interrupted move before publishing the format (3.109ms)
+✔ a real missing known revision prevents format activation and preserves local ancestry (1.948166ms)
+✔ sharded listing still rejects missing parents, missing blobs and disappeared cached revisions (4.674208ms)
+✔ late writes by an old client stop new clients instead of being silently omitted (2.1975ms)
+✔ rollback restores the original flat objects byte-for-byte and archives metadata without DELETE (5.468417ms)
+✔ B3: selected v2 validates format only once while uploading ten files (3.876875ms)
+✔ B1: mobile pending journal survives restart independently of snapshot (10.547667ms)
+✔ B1: mobile pending journal rejects corruption instead of forgetting intent (1.168959ms)
+✔ B1: an unfinished pending journal cannot be replaced by another operation (1.388375ms)
+✔ B1: pending is recoverable when process exits immediately after publication (1.688041ms)
+✔ B1: pending temporary partial write never becomes a committed journal (0.763417ms)
+✔ B1: mobile checkpoints do not reread committed slots during consecutive saves (1.134791ms)
+✔ B1: incomplete checkpoint write preserves the latest complete slot (1.334334ms)
+✔ B1: confirmed directory checks are cached without losing file collision checks (1.046083ms)
+✔ B1: desktop pending journal is independent, durable and idempotently cleared (41.959959ms)
+✔ B1: beta 0.3 snapshot envelope and embedded pending stay readable during upgrade (1.360708ms)
+✔ B1: repeated save of the exact pending intent is idempotent (0.560875ms)
+ℹ tests 124
+ℹ suites 0
+ℹ pass 115
+ℹ fail 9
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3209.632416
+
+✖ failing tests:
+
+test at test/b1-recovery.test.js:158:31
+✖ B1: upload restart after pending preserves both branches without extra revisions (102.4875ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async scenario (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:144:11)
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:160:25)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:158:31
+✖ B1: upload restart after checkpoint-before preserves both branches without extra revisions (29.343042ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async scenario (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:144:11)
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:160:25)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:158:31
+✖ B1: upload restart after checkpoint-partial preserves both branches without extra revisions (27.007459ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async scenario (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:144:11)
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:160:25)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:158:31
+✖ B1: download restart after pending preserves both branches without extra revisions (17.985875ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async scenario (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:144:11)
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:160:25)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:158:31
+✖ B1: download restart after checkpoint-before preserves both branches without extra revisions (13.572084ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async scenario (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:144:11)
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:160:25)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:158:31
+✖ B1: download restart after checkpoint-partial preserves both branches without extra revisions (21.837ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async scenario (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:144:11)
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:160:25)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:165:46
+✖ B1: later editor change survives upload pending recovery (1.58125ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:170:9)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /B1 injected process exit/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:210:41
+✖ B1: checkpoint recovery accepts a leaf descending from all old parents (1.219833ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:220:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/b1-recovery.test.js:228:1
+✖ B1: upgrade resumes an embedded 0.3.0-beta.1 push pending before using independent pending (1.064208ms)
+  AssertionError [ERR_ASSERTION]: later operations use the new pending interface
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-B1/test/b1-recovery.test.js:244:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
