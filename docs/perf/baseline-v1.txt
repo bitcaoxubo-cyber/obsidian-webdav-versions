@@ -1,0 +1,27 @@
+vault: 1000 notes + 10 x 1 MiB attachments = 13.8 MiB, remote layout v1
+
+== Mac initial upload (mobile code path) ==  up 1010 / down 0   wall 25978 ms (node)
+  adapter calls 68760 {"exists":9102,"stat":38412,"list":22,"readBinary":12125,"mkdir":5,"writeBinary":3032,"rename":3032,"remove":3030}
+  local bytes read 1192.8 MiB, written 298.4 MiB
+  JS sha256: 31317 calls, 1514.3 MiB, 23917 ms
+  HTTP 8089 {"GET":4042,"PROPFIND":6,"MKCOL":1,"HEAD":2020,"PUT":2020}  down 14.0 MiB up 14.0 MiB
+
+== phone initial download ==  up 0 / down 1010   wall 31218 ms (node)
+  adapter calls 78924 {"exists":14176,"stat":42485,"mkdir":1036,"writeBinary":4043,"readBinary":10109,"rename":3033,"list":1,"remove":2021,"copy":1010,"rmdir":1010}
+  local bytes read 1422.5 MiB, written 366.3 MiB
+  JS sha256: 25262 calls, 1791.7 MiB, 28926 ms
+  HTTP 3034 {"GET":2022,"PROPFIND":2,"HEAD":1010}  down 14.5 MiB up 0.0 MiB
+
+== phone IDLE sync (nothing changed anywhere) ==  up 0 / down 0   wall 591 ms (node)
+  adapter calls 5122 {"exists":7,"stat":3057,"readBinary":2030,"list":22,"writeBinary":2,"remove":2,"rename":2}
+  local bytes read 30.4 MiB, written 0.6 MiB
+  JS sha256: 8092 calls, 31.8 MiB, 538 ms
+  HTTP 4 {"GET":2,"PROPFIND":2}  down 0.5 MiB up 0.0 MiB
+
+== phone sync after editing ONE note ==  up 1 / down 0   wall 632 ms (node)
+  adapter calls 5187 {"exists":16,"stat":3093,"readBinary":2041,"list":22,"writeBinary":5,"rename":5,"remove":5}
+  local bytes read 32.6 MiB, written 1.1 MiB
+  JS sha256: 8120 calls, 34.5 MiB, 580 ms
+  HTTP 12 {"GET":6,"PROPFIND":2,"HEAD":2,"PUT":2}  down 0.5 MiB up 0.0 MiB
+
+state file sizes (bytes): [ 294989, 294989 ]

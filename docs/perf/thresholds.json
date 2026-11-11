@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "description": "Rules compare raw counts/bytes. A and B are single-run checks. scaling requires --compare with the 1000/10 JSON report, tested on 2000/20. latency requires --compare with the pre-B4 JSON report at the same size, layout and --latency 20. Safety-related misses remain failures and must be documented, not relaxed.",
+  "stages": {
+    "A": [
+      {
+        "round": "idle",
+        "metric": "adapter.vault.calls.readBinary",
+        "max": 0
+      },
+      {
+        "round": "idle2",
+        "metric": "adapter.vault.calls.readBinary",
+        "max": 0
+      },
+      {
+        "round": "idle",
+        "metric": "hash.js.calls",
+        "max": 20
+      },
+      {
+        "round": "idle",
+        "metric": "hash.js.bytes",
+        "max": 104857.6
+      },
+      {
+        "round": "idle2",
+        "metric": "hash.js.calls",
+        "max": 20
+      },
+      {
+        "round": "idle2",
+        "metric": "hash.js.bytes",
+        "max": 104857.6
+      },
+      {
+        "round": "*",
+        "metric": "hash.js.maxInputBytes",
+        "max": 65536
+      },
+      {
+        "round": "incremental",
+        "metric": "adapter.totalCalls",
+        "max": 100
+      },
+      {
+        "round": "idle",
+        "metric": "adapter.totalCalls",
+        "max": 1200
+      },
+      {
+        "round": "idle2",
+        "metric": "adapter.totalCalls",
+        "max": 1200
+      }
+    ],
+    "B": [
+      {
+        "round": "idle",
+        "metric": "adapter.vault.calls.readBinary",
+        "max": 0
+      },
+      {
+        "round": "idle2",
+        "metric": "adapter.vault.calls.readBinary",
+        "max": 0
+      },
+      {
+        "round": "idle",
+        "metric": "hash.js.calls",
+        "max": 20
+      },
+      {
+        "round": "idle",
+        "metric": "hash.js.bytes",
+        "max": 104857.6
+      },
+      {
+        "round": "idle2",
+        "metric": "hash.js.calls",
+        "max": 20
+      },
+      {
+        "round": "idle2",
+        "metric": "hash.js.bytes",
+        "max": 104857.6
+      },
+      {
+        "round": "*",
+        "metric": "hash.js.maxInputBytes",
+        "max": 65536
+      },
+      {
+        "round": "incremental",
+        "metric": "adapter.totalCalls",
+        "max": 100
+      },
+      {
+        "round": "idle",
+        "metric": "adapter.totalCalls",
+        "max": 1100
+      },
+      {
+        "round": "idle2",
+        "metric": "adapter.totalCalls",
+        "max": 1100
+      },
+      {
+        "round": "idle",
+        "metric": "adapter.calls.writeBinary",
+        "max": 0
+      },
+      {
+        "round": "idle2",
+        "metric": "adapter.calls.writeBinary",
+        "max": 0
+      },
+      {
+        "round": "idle",
+        "metric": "http.totalCalls",
+        "max": 2,
+        "layout": "v1"
+      },
+      {
+        "round": "idle",
+        "metric": "http.totalCalls",
+        "max": 18,
+        "layout": "v2"
+      },
+      {
+        "round": "idle",
+        "metric": "http.calls.GET",
+        "max": 0,
+        "layout": "v2"
+      },
+      {
+        "round": "upload",
+        "metric": "http.totalCalls",
+        "maxPerFile": 5
+      },
+      {
+        "round": "download",
+        "metric": "hash.totalBytes",
+        "maxVaultMultiple": 10
+      },
+      {
+        "round": "download",
+        "metric": "adapter.readBytes",
+        "maxVaultMultiple": 8
+      },
+      {
+        "round": "download",
+        "metric": "adapter.writeBytes",
+        "maxVaultMultiple": 4
+      }
+    ],
+    "scaling": [
+      {
+        "round": "download",
+        "metric": "hash.totalBytes",
+        "maxRatio": 2.3
+      },
+      {
+        "round": "incremental",
+        "metric": "adapter.totalCalls",
+        "maxRatio": 1.1
+      }
+    ],
+    "latency": [
+      {
+        "round": "download",
+        "metric": "wallMs",
+        "maxRatio": 0.4
+      },
+      {
+        "round": "upload",
+        "metric": "wallMs",
+        "maxRatio": 0.65
+      }
+    ]
+  }
+}

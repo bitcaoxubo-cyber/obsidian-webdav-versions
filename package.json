@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node scripts/build.js",
     "test": "node --test test/*.test.js",
-    "check": "node scripts/build.js && node --test test/*.test.js"
+    "check": "node scripts/build.js && node --test test/*.test.js",
+    "bench": "node scripts/bench-sync.js . 1000 10 v1"
   },
   "engines": {
     "node": ">=22"
