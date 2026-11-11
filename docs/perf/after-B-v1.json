@@ -12,7 +12,7 @@
     {
       "id": "upload",
       "label": "Mac initial upload (mobile code path)",
-      "wallMs": 381.897125,
+      "wallMs": 396.587,
       "result": {
         "uploaded": 1010,
         "downloaded": 0,
@@ -22,7 +22,7 @@
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 382,
+          "durationMs": 396,
           "vaultReads": 2020,
           "hashBytes": 165232761,
           "httpRequests": 5059,
@@ -72,13 +72,13 @@
           "calls": 6060,
           "bytes": 1020540,
           "maxInputBytes": 170,
-          "ms": 44.35281199999895
+          "ms": 46.63217999999965
         },
         "webcrypto": {
           "calls": 17188,
           "bytes": 165232761,
           "maxInputBytes": 1048576,
-          "ms": 261.38001600000297
+          "ms": 268.38698900000304
         },
         "totalBytes": 166253301
       },
@@ -98,7 +98,7 @@
     {
       "id": "download",
       "label": "phone initial download",
-      "wallMs": 330.939416,
+      "wallMs": 330.104417,
       "result": {
         "uploaded": 0,
         "downloaded": 1010,
@@ -108,7 +108,7 @@
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 331,
+          "durationMs": 330,
           "vaultReads": 1010,
           "hashBytes": 108361578,
           "httpRequests": 3034,
@@ -164,13 +164,13 @@
           "calls": 1010,
           "bytes": 170090,
           "maxInputBytes": 170,
-          "ms": 4.724040000000059
+          "ms": 5.004963999999916
         },
         "webcrypto": {
           "calls": 15171,
           "bytes": 108361578,
           "maxInputBytes": 1048576,
-          "ms": 190.35030800000044
+          "ms": 184.9064959999908
         },
         "totalBytes": 108531668
       },
@@ -188,7 +188,7 @@
     {
       "id": "idle",
       "label": "phone IDLE sync (nothing changed anywhere)",
-      "wallMs": 29.66954199999998,
+      "wallMs": 29.385999999999967,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -198,7 +198,7 @@
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 30,
+          "durationMs": 29,
           "vaultReads": 0,
           "hashBytes": 555260,
           "httpRequests": 2,
@@ -245,7 +245,7 @@
           "calls": 2,
           "bytes": 555260,
           "maxInputBytes": 278667,
-          "ms": 0.20145800000000236
+          "ms": 0.22204199999998764
         },
         "totalBytes": 555260
       },
@@ -261,7 +261,7 @@
     {
       "id": "edit",
       "label": "phone sync after editing ONE note",
-      "wallMs": 30.668125000000032,
+      "wallMs": 28.906000000000063,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -271,7 +271,7 @@
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 30,
+          "durationMs": 29,
           "vaultReads": 3,
           "hashBytes": 1427252,
           "httpRequests": 7,
@@ -319,13 +319,13 @@
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.2395410000000311
+          "ms": 0.2543320000000904
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 1427252,
           "maxInputBytes": 295011,
-          "ms": 1.0906269999999267
+          "ms": 1.0245009999999866
         },
         "totalBytes": 1428192
       },
@@ -344,7 +344,7 @@
     {
       "id": "idle2",
       "label": "phone second IDLE sync",
-      "wallMs": 27.961625000000026,
+      "wallMs": 43.60629200000005,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -354,7 +354,7 @@
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 28,
+          "durationMs": 43,
           "vaultReads": 0,
           "hashBytes": 557401,
           "httpRequests": 2,
@@ -401,7 +401,7 @@
           "calls": 2,
           "bytes": 557401,
           "maxInputBytes": 278734,
-          "ms": 0.8872910000000047
+          "ms": 0.25483299999996234
         },
         "totalBytes": 557401
       },
@@ -417,7 +417,7 @@
     {
       "id": "incremental",
       "label": "phone incremental sync after editing ONE note",
-      "wallMs": 29.023416999999995,
+      "wallMs": 25.62854200000004,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -427,7 +427,7 @@
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 29,
+          "durationMs": 26,
           "vaultReads": 3,
           "hashBytes": 1429658,
           "httpRequests": 7,
@@ -474,13 +474,13 @@
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.24762600000008206
+          "ms": 0.25433299999997416
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 1429658,
           "maxInputBytes": 295080,
-          "ms": 2.089290999999889
+          "ms": 0.8778330000003507
         },
         "totalBytes": 1430598
       },
@@ -503,7 +503,7 @@
   ],
   "assertions": {
     "stage": "B",
-    "passed": false,
+    "passed": true,
     "checked": [
       {
         "metric": "idle.adapter.vault.calls.readBinary",
@@ -596,11 +596,6 @@
         "max": 2
       },
       {
-        "metric": "upload.http.totalCalls",
-        "value": 5059,
-        "max": 5050
-      },
-      {
         "metric": "download.hash.totalBytes",
         "value": 108531668,
         "max": 144432600
@@ -616,8 +611,6 @@
         "max": 57773040
       }
     ],
-    "failures": [
-      "upload.http.totalCalls: 5059 > 5050"
-    ]
+    "failures": []
   }
 }

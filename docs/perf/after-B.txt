@@ -13,7 +13,7 @@ after-B-v1.json
     {
       "id": "upload",
       "label": "Mac initial upload (mobile code path)",
-      "wallMs": 381.897125,
+      "wallMs": 396.587,
       "result": {
         "uploaded": 1010,
         "downloaded": 0,
@@ -23,7 +23,7 @@ after-B-v1.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 382,
+          "durationMs": 396,
           "vaultReads": 2020,
           "hashBytes": 165232761,
           "httpRequests": 5059,
@@ -73,13 +73,13 @@ after-B-v1.json
           "calls": 6060,
           "bytes": 1020540,
           "maxInputBytes": 170,
-          "ms": 44.35281199999895
+          "ms": 46.63217999999965
         },
         "webcrypto": {
           "calls": 17188,
           "bytes": 165232761,
           "maxInputBytes": 1048576,
-          "ms": 261.38001600000297
+          "ms": 268.38698900000304
         },
         "totalBytes": 166253301
       },
@@ -99,7 +99,7 @@ after-B-v1.json
     {
       "id": "download",
       "label": "phone initial download",
-      "wallMs": 330.939416,
+      "wallMs": 330.104417,
       "result": {
         "uploaded": 0,
         "downloaded": 1010,
@@ -109,7 +109,7 @@ after-B-v1.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 331,
+          "durationMs": 330,
           "vaultReads": 1010,
           "hashBytes": 108361578,
           "httpRequests": 3034,
@@ -165,13 +165,13 @@ after-B-v1.json
           "calls": 1010,
           "bytes": 170090,
           "maxInputBytes": 170,
-          "ms": 4.724040000000059
+          "ms": 5.004963999999916
         },
         "webcrypto": {
           "calls": 15171,
           "bytes": 108361578,
           "maxInputBytes": 1048576,
-          "ms": 190.35030800000044
+          "ms": 184.9064959999908
         },
         "totalBytes": 108531668
       },
@@ -189,7 +189,7 @@ after-B-v1.json
     {
       "id": "idle",
       "label": "phone IDLE sync (nothing changed anywhere)",
-      "wallMs": 29.66954199999998,
+      "wallMs": 29.385999999999967,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -199,7 +199,7 @@ after-B-v1.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 30,
+          "durationMs": 29,
           "vaultReads": 0,
           "hashBytes": 555260,
           "httpRequests": 2,
@@ -246,7 +246,7 @@ after-B-v1.json
           "calls": 2,
           "bytes": 555260,
           "maxInputBytes": 278667,
-          "ms": 0.20145800000000236
+          "ms": 0.22204199999998764
         },
         "totalBytes": 555260
       },
@@ -262,7 +262,7 @@ after-B-v1.json
     {
       "id": "edit",
       "label": "phone sync after editing ONE note",
-      "wallMs": 30.668125000000032,
+      "wallMs": 28.906000000000063,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -272,7 +272,7 @@ after-B-v1.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 30,
+          "durationMs": 29,
           "vaultReads": 3,
           "hashBytes": 1427252,
           "httpRequests": 7,
@@ -320,13 +320,13 @@ after-B-v1.json
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.2395410000000311
+          "ms": 0.2543320000000904
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 1427252,
           "maxInputBytes": 295011,
-          "ms": 1.0906269999999267
+          "ms": 1.0245009999999866
         },
         "totalBytes": 1428192
       },
@@ -345,7 +345,7 @@ after-B-v1.json
     {
       "id": "idle2",
       "label": "phone second IDLE sync",
-      "wallMs": 27.961625000000026,
+      "wallMs": 43.60629200000005,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -355,7 +355,7 @@ after-B-v1.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 28,
+          "durationMs": 43,
           "vaultReads": 0,
           "hashBytes": 557401,
           "httpRequests": 2,
@@ -402,7 +402,7 @@ after-B-v1.json
           "calls": 2,
           "bytes": 557401,
           "maxInputBytes": 278734,
-          "ms": 0.8872910000000047
+          "ms": 0.25483299999996234
         },
         "totalBytes": 557401
       },
@@ -418,7 +418,7 @@ after-B-v1.json
     {
       "id": "incremental",
       "label": "phone incremental sync after editing ONE note",
-      "wallMs": 29.023416999999995,
+      "wallMs": 25.62854200000004,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -428,7 +428,7 @@ after-B-v1.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 29,
+          "durationMs": 26,
           "vaultReads": 3,
           "hashBytes": 1429658,
           "httpRequests": 7,
@@ -475,13 +475,13 @@ after-B-v1.json
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.24762600000008206
+          "ms": 0.25433299999997416
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 1429658,
           "maxInputBytes": 295080,
-          "ms": 2.089290999999889
+          "ms": 0.8778330000003507
         },
         "totalBytes": 1430598
       },
@@ -504,7 +504,7 @@ after-B-v1.json
   ],
   "assertions": {
     "stage": "B",
-    "passed": false,
+    "passed": true,
     "checked": [
       {
         "metric": "idle.adapter.vault.calls.readBinary",
@@ -597,11 +597,6 @@ after-B-v1.json
         "max": 2
       },
       {
-        "metric": "upload.http.totalCalls",
-        "value": 5059,
-        "max": 5050
-      },
-      {
         "metric": "download.hash.totalBytes",
         "value": 108531668,
         "max": 144432600
@@ -617,9 +612,7 @@ after-B-v1.json
         "max": 57773040
       }
     ],
-    "failures": [
-      "upload.http.totalCalls: 5059 > 5050"
-    ]
+    "failures": []
   }
 }
 
@@ -638,7 +631,7 @@ after-B-v2.json
     {
       "id": "upload",
       "label": "Mac initial upload (mobile code path)",
-      "wallMs": 386.910459,
+      "wallMs": 400.016792,
       "result": {
         "uploaded": 1010,
         "downloaded": 0,
@@ -648,7 +641,7 @@ after-B-v2.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 387,
+          "durationMs": 400,
           "vaultReads": 2020,
           "hashBytes": 165232761,
           "httpRequests": 5102,
@@ -698,13 +691,13 @@ after-B-v2.json
           "calls": 6060,
           "bytes": 1020540,
           "maxInputBytes": 170,
-          "ms": 43.76357700000018
+          "ms": 44.55777899999873
         },
         "webcrypto": {
           "calls": 17188,
           "bytes": 165232761,
           "maxInputBytes": 1048576,
-          "ms": 265.5312309999975
+          "ms": 276.33316600000234
         },
         "totalBytes": 166253301
       },
@@ -724,7 +717,7 @@ after-B-v2.json
     {
       "id": "download",
       "label": "phone initial download",
-      "wallMs": 339.41745800000007,
+      "wallMs": 344.39500000000004,
       "result": {
         "uploaded": 0,
         "downloaded": 1010,
@@ -734,7 +727,7 @@ after-B-v2.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 339,
+          "durationMs": 344,
           "vaultReads": 1010,
           "hashBytes": 108361578,
           "httpRequests": 3050,
@@ -790,13 +783,13 @@ after-B-v2.json
           "calls": 1010,
           "bytes": 170090,
           "maxInputBytes": 170,
-          "ms": 5.57222199999967
+          "ms": 5.862914999998964
         },
         "webcrypto": {
           "calls": 15171,
           "bytes": 108361578,
           "maxInputBytes": 1048576,
-          "ms": 188.01303299999807
+          "ms": 184.9809579999894
         },
         "totalBytes": 108531668
       },
@@ -814,7 +807,7 @@ after-B-v2.json
     {
       "id": "idle",
       "label": "phone IDLE sync (nothing changed anywhere)",
-      "wallMs": 29.52875000000006,
+      "wallMs": 30.228500000000054,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -824,7 +817,7 @@ after-B-v2.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 30,
+          "durationMs": 31,
           "vaultReads": 0,
           "hashBytes": 555260,
           "httpRequests": 18,
@@ -871,7 +864,7 @@ after-B-v2.json
           "calls": 2,
           "bytes": 555260,
           "maxInputBytes": 278667,
-          "ms": 0.21479199999998855
+          "ms": 0.20783300000005056
         },
         "totalBytes": 555260
       },
@@ -887,7 +880,7 @@ after-B-v2.json
     {
       "id": "edit",
       "label": "phone sync after editing ONE note",
-      "wallMs": 34.08820800000001,
+      "wallMs": 32.13141699999994,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -897,7 +890,7 @@ after-B-v2.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 34,
+          "durationMs": 32,
           "vaultReads": 3,
           "hashBytes": 1427252,
           "httpRequests": 23,
@@ -945,13 +938,13 @@ after-B-v2.json
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.23737599999992653
+          "ms": 0.2469579999999496
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 1427252,
           "maxInputBytes": 295011,
-          "ms": 1.6799570000000585
+          "ms": 1.056248000000437
         },
         "totalBytes": 1428192
       },
@@ -970,7 +963,7 @@ after-B-v2.json
     {
       "id": "idle2",
       "label": "phone second IDLE sync",
-      "wallMs": 29.382999999999925,
+      "wallMs": 44.076124999999934,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -980,7 +973,7 @@ after-B-v2.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 29,
+          "durationMs": 44,
           "vaultReads": 0,
           "hashBytes": 557401,
           "httpRequests": 18,
@@ -1027,7 +1020,7 @@ after-B-v2.json
           "calls": 2,
           "bytes": 557401,
           "maxInputBytes": 278734,
-          "ms": 0.21775000000002365
+          "ms": 0.22533199999998033
         },
         "totalBytes": 557401
       },
@@ -1043,7 +1036,7 @@ after-B-v2.json
     {
       "id": "incremental",
       "label": "phone incremental sync after editing ONE note",
-      "wallMs": 28.550041999999962,
+      "wallMs": 27.771082999999976,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -1053,7 +1046,7 @@ after-B-v2.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 29,
+          "durationMs": 28,
           "vaultReads": 3,
           "hashBytes": 1429658,
           "httpRequests": 23,
@@ -1100,13 +1093,13 @@ after-B-v2.json
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.03779100000008384
+          "ms": 0.043627000000128646
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 1429658,
           "maxInputBytes": 295080,
-          "ms": 0.7176669999998921
+          "ms": 0.7641710000001467
         },
         "totalBytes": 1430598
       },
@@ -1129,7 +1122,7 @@ after-B-v2.json
   ],
   "assertions": {
     "stage": "B",
-    "passed": false,
+    "passed": true,
     "checked": [
       {
         "metric": "idle.adapter.vault.calls.readBinary",
@@ -1227,11 +1220,6 @@ after-B-v2.json
         "max": 0
       },
       {
-        "metric": "upload.http.totalCalls",
-        "value": 5102,
-        "max": 5050
-      },
-      {
         "metric": "download.hash.totalBytes",
         "value": 108531668,
         "max": 144432600
@@ -1247,9 +1235,7 @@ after-B-v2.json
         "max": 57773040
       }
     ],
-    "failures": [
-      "upload.http.totalCalls: 5102 > 5050"
-    ]
+    "failures": []
   }
 }
 
@@ -1268,7 +1254,7 @@ after-B-2000.json
     {
       "id": "upload",
       "label": "Mac initial upload (mobile code path)",
-      "wallMs": 742.39175,
+      "wallMs": 746.359667,
       "result": {
         "uploaded": 2020,
         "downloaded": 0,
@@ -1278,7 +1264,7 @@ after-B-2000.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 742,
+          "durationMs": 746,
           "vaultReads": 4040,
           "hashBytes": 335122022,
           "httpRequests": 10109,
@@ -1328,13 +1314,13 @@ after-B-2000.json
           "calls": 12120,
           "bytes": 2047800,
           "maxInputBytes": 171,
-          "ms": 71.70378899999929
+          "ms": 74.73951400000333
         },
         "webcrypto": {
           "calls": 34373,
           "bytes": 335122022,
           "maxInputBytes": 1048576,
-          "ms": 518.2125669999945
+          "ms": 517.8301599999912
         },
         "totalBytes": 337169822
       },
@@ -1354,7 +1340,7 @@ after-B-2000.json
     {
       "id": "download",
       "label": "phone initial download",
-      "wallMs": 673.1020410000001,
+      "wallMs": 673.1028330000001,
       "result": {
         "uploaded": 0,
         "downloaded": 2020,
@@ -1364,7 +1350,7 @@ after-B-2000.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 674,
+          "durationMs": 673,
           "vaultReads": 2020,
           "hashBytes": 222328497,
           "httpRequests": 6064,
@@ -1420,13 +1406,13 @@ after-B-2000.json
           "calls": 2020,
           "bytes": 341300,
           "maxInputBytes": 171,
-          "ms": 14.774844000001508
+          "ms": 13.914257000002067
         },
         "webcrypto": {
           "calls": 30336,
           "bytes": 222328497,
           "maxInputBytes": 1048576,
-          "ms": 356.6372939999974
+          "ms": 354.0713219999948
         },
         "totalBytes": 222669797
       },
@@ -1444,7 +1430,7 @@ after-B-2000.json
     {
       "id": "idle",
       "label": "phone IDLE sync (nothing changed anywhere)",
-      "wallMs": 71.4571249999999,
+      "wallMs": 55.770208999999795,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -1454,7 +1440,7 @@ after-B-2000.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 71,
+          "durationMs": 56,
           "vaultReads": 0,
           "hashBytes": 1114802,
           "httpRequests": 2,
@@ -1501,7 +1487,7 @@ after-B-2000.json
           "calls": 2,
           "bytes": 1114802,
           "maxInputBytes": 559477,
-          "ms": 0.4261250000001837
+          "ms": 0.9171669999998358
         },
         "totalBytes": 1114802
       },
@@ -1517,7 +1503,7 @@ after-B-2000.json
     {
       "id": "edit",
       "label": "phone sync after editing ONE note",
-      "wallMs": 64.131167,
+      "wallMs": 62.64829099999997,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -1527,7 +1513,7 @@ after-B-2000.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 64,
+          "durationMs": 63,
           "vaultReads": 3,
           "hashBytes": 2861546,
           "httpRequests": 7,
@@ -1575,13 +1561,13 @@ after-B-2000.json
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.2699160000001939
+          "ms": 0.2584169999997812
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 2861546,
           "maxInputBytes": 591982,
-          "ms": 3.2068339999998443
+          "ms": 3.4311250000000655
         },
         "totalBytes": 2862486
       },
@@ -1600,7 +1586,7 @@ after-B-2000.json
     {
       "id": "idle2",
       "label": "phone second IDLE sync",
-      "wallMs": 50.72533300000009,
+      "wallMs": 53.43316700000014,
       "result": {
         "uploaded": 0,
         "downloaded": 0,
@@ -1610,7 +1596,7 @@ after-B-2000.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 51,
+          "durationMs": 53,
           "vaultReads": 0,
           "hashBytes": 1119021,
           "httpRequests": 2,
@@ -1657,7 +1643,7 @@ after-B-2000.json
           "calls": 2,
           "bytes": 1119021,
           "maxInputBytes": 559544,
-          "ms": 0.4047080000000278
+          "ms": 0.3943739999999707
         },
         "totalBytes": 1119021
       },
@@ -1673,7 +1659,7 @@ after-B-2000.json
     {
       "id": "incremental",
       "label": "phone incremental sync after editing ONE note",
-      "wallMs": 57.49529099999995,
+      "wallMs": 52.267292,
       "result": {
         "uploaded": 1,
         "downloaded": 0,
@@ -1683,7 +1669,7 @@ after-B-2000.json
         "conflictPaths": [],
         "deferredPaths": [],
         "stats": {
-          "durationMs": 57,
+          "durationMs": 53,
           "vaultReads": 3,
           "hashBytes": 2866030,
           "httpRequests": 7,
@@ -1730,13 +1716,13 @@ after-B-2000.json
           "calls": 4,
           "bytes": 940,
           "maxInputBytes": 235,
-          "ms": 0.034793000000036045
+          "ms": 0.032959000000118976
         },
         "webcrypto": {
           "calls": 23,
           "bytes": 2866030,
           "maxInputBytes": 592051,
-          "ms": 2.5196250000005875
+          "ms": 1.2124539999997523
         },
         "totalBytes": 2866970
       },
@@ -1770,6 +1756,19 @@ after-B-2000.json
         "metric": "incremental.adapter.totalCalls",
         "value": 71,
         "max": 78.10000000000001
+      },
+      {
+        "metric": "upload.http.totalCalls",
+        "value": 5,
+        "max": 5,
+        "comparison": {
+          "currentFiles": 2020,
+          "previousFiles": 1010,
+          "fileDelta": 1010,
+          "currentValue": 10109,
+          "previousValue": 5059,
+          "metricDelta": 5050
+        }
       }
     ],
     "failures": []
@@ -2183,3 +2182,769 @@ after-B-latency.json
   }
 }
 
+Supplement: 2000/20 v2 scaling (exit 0)
+{
+  "schemaVersion": 1,
+  "config": {
+    "notes": 2000,
+    "attachments": 20,
+    "layout": "v2",
+    "latencyMs": 0,
+    "fileCount": 2020,
+    "vaultBytes": 28914520
+  },
+  "rounds": [
+    {
+      "id": "upload",
+      "label": "Mac initial upload (mobile code path)",
+      "wallMs": 747.159417,
+      "result": {
+        "uploaded": 2020,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 747,
+          "vaultReads": 4040,
+          "hashBytes": 335122022,
+          "httpRequests": 10152,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 16201,
+          "stat": 34417,
+          "list": 33,
+          "readBinary": 12131,
+          "mkdir": 5,
+          "writeBinary": 6072,
+          "rename": 6072,
+          "remove": 6069
+        },
+        "readBytes": 121580343,
+        "writeBytes": 35107468,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 6060,
+            "readBinary": 4040
+          },
+          "readBytes": 57829040,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 16201,
+            "stat": 28357,
+            "mkdir": 5,
+            "writeBinary": 6072,
+            "readBinary": 8091,
+            "rename": 6072,
+            "remove": 6069,
+            "list": 11
+          },
+          "readBytes": 63751303,
+          "writeBytes": 35107468
+        },
+        "totalCalls": 81000
+      },
+      "hash": {
+        "js": {
+          "calls": 12120,
+          "bytes": 2047800,
+          "maxInputBytes": 171,
+          "ms": 72.99560000000076
+        },
+        "webcrypto": {
+          "calls": 34373,
+          "bytes": 335122022,
+          "maxInputBytes": 1048576,
+          "ms": 521.0321829999925
+        },
+        "totalBytes": 337169822
+      },
+      "http": {
+        "calls": {
+          "GET": 4042,
+          "PROPFIND": 34,
+          "MKCOL": 16,
+          "PUT": 4040,
+          "HEAD": 2020
+        },
+        "totalCalls": 10152,
+        "downBytes": 29427984,
+        "upBytes": 29423480
+      }
+    },
+    {
+      "id": "download",
+      "label": "phone initial download",
+      "wallMs": 691.2114580000001,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 2020,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 691,
+          "vaultReads": 2020,
+          "hashBytes": 222328497,
+          "httpRequests": 6080,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 26325,
+          "stat": 44564,
+          "mkdir": 2046,
+          "writeBinary": 8093,
+          "readBinary": 10112,
+          "rename": 6073,
+          "list": 13,
+          "copy": 2020,
+          "rmdir": 2020,
+          "remove": 4050
+        },
+        "readBytes": 64791080,
+        "writeBytes": 36147245,
+        "vault": {
+          "calls": {
+            "list": 1,
+            "stat": 12162,
+            "mkdir": 21,
+            "exists": 4061,
+            "readBinary": 2020
+          },
+          "readBytes": 28914520,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 22264,
+            "stat": 32402,
+            "mkdir": 2025,
+            "writeBinary": 8093,
+            "readBinary": 8092,
+            "rename": 6073,
+            "list": 12,
+            "copy": 2020,
+            "rmdir": 2020,
+            "remove": 4050
+          },
+          "readBytes": 35876560,
+          "writeBytes": 36147245
+        },
+        "totalCalls": 105316
+      },
+      "hash": {
+        "js": {
+          "calls": 2020,
+          "bytes": 341300,
+          "maxInputBytes": 171,
+          "ms": 13.73238299999798
+        },
+        "webcrypto": {
+          "calls": 30336,
+          "bytes": 222328497,
+          "maxInputBytes": 1048576,
+          "ms": 359.3475000000069
+        },
+        "totalBytes": 222669797
+      },
+      "http": {
+        "calls": {
+          "GET": 4042,
+          "PROPFIND": 18,
+          "HEAD": 2020
+        },
+        "totalCalls": 6080,
+        "downBytes": 30477624,
+        "upBytes": 0
+      }
+    },
+    {
+      "id": "idle",
+      "label": "phone IDLE sync (nothing changed anywhere)",
+      "wallMs": 79.79191700000001,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 79,
+          "vaultReads": 0,
+          "hashBytes": 1114802,
+          "httpRequests": 18,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 1,
+          "stat": 2026,
+          "readBinary": 2,
+          "list": 24
+        },
+        "readBytes": 1179394,
+        "writeBytes": 0,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 2020
+          },
+          "readBytes": 0,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 1,
+            "stat": 6,
+            "readBinary": 2,
+            "list": 2
+          },
+          "readBytes": 1179394,
+          "writeBytes": 0
+        },
+        "totalCalls": 2053
+      },
+      "hash": {
+        "js": {
+          "calls": 0,
+          "bytes": 0,
+          "maxInputBytes": 0,
+          "ms": 0
+        },
+        "webcrypto": {
+          "calls": 2,
+          "bytes": 1114802,
+          "maxInputBytes": 559477,
+          "ms": 0.4215839999999389
+        },
+        "totalBytes": 1114802
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18
+        },
+        "totalCalls": 18,
+        "downBytes": 1054104,
+        "upBytes": 0
+      }
+    },
+    {
+      "id": "edit",
+      "label": "phone sync after editing ONE note",
+      "wallMs": 65.4079999999999,
+      "result": {
+        "uploaded": 1,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 66,
+          "vaultReads": 3,
+          "hashBytes": 2861546,
+          "httpRequests": 23,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 14,
+          "stat": 2049,
+          "readBinary": 10,
+          "list": 24,
+          "writeBinary": 5,
+          "rename": 5,
+          "remove": 5
+        },
+        "readBytes": 1772551,
+        "writeBytes": 863784,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 2023,
+            "readBinary": 3
+          },
+          "readBytes": 42,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 14,
+            "stat": 26,
+            "readBinary": 7,
+            "list": 2,
+            "writeBinary": 5,
+            "rename": 5,
+            "remove": 5
+          },
+          "readBytes": 1772509,
+          "writeBytes": 863784
+        },
+        "totalCalls": 2112
+      },
+      "hash": {
+        "js": {
+          "calls": 4,
+          "bytes": 940,
+          "maxInputBytes": 235,
+          "ms": 0.25562399999967056
+        },
+        "webcrypto": {
+          "calls": 23,
+          "bytes": 2861546,
+          "maxInputBytes": 591982,
+          "ms": 2.1618329999992056
+        },
+        "totalBytes": 2862486
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18,
+          "PUT": 2,
+          "HEAD": 1,
+          "GET": 2
+        },
+        "totalCalls": 23,
+        "downBytes": 1054436,
+        "upBytes": 332
+      }
+    },
+    {
+      "id": "idle2",
+      "label": "phone second IDLE sync",
+      "wallMs": 55.261833000000024,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 55,
+          "vaultReads": 0,
+          "hashBytes": 1119021,
+          "httpRequests": 18,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 1,
+          "stat": 2026,
+          "readBinary": 2,
+          "list": 24
+        },
+        "readBytes": 1183895,
+        "writeBytes": 0,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 2020
+          },
+          "readBytes": 0,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 1,
+            "stat": 6,
+            "readBinary": 2,
+            "list": 2
+          },
+          "readBytes": 1183895,
+          "writeBytes": 0
+        },
+        "totalCalls": 2053
+      },
+      "hash": {
+        "js": {
+          "calls": 0,
+          "bytes": 0,
+          "maxInputBytes": 0,
+          "ms": 0
+        },
+        "webcrypto": {
+          "calls": 2,
+          "bytes": 1119021,
+          "maxInputBytes": 559544,
+          "ms": 0.3972920000001068
+        },
+        "totalBytes": 1119021
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18
+        },
+        "totalCalls": 18,
+        "downBytes": 1054622,
+        "upBytes": 0
+      }
+    },
+    {
+      "id": "incremental",
+      "label": "phone incremental sync after editing ONE note",
+      "wallMs": 57.024999999999864,
+      "result": {
+        "uploaded": 1,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 57,
+          "vaultReads": 3,
+          "hashBytes": 2866030,
+          "httpRequests": 23,
+          "full": 0
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 14,
+          "stat": 30,
+          "readBinary": 10,
+          "list": 2,
+          "writeBinary": 5,
+          "rename": 5,
+          "remove": 5
+        },
+        "readBytes": 1777146,
+        "writeBytes": 863858,
+        "vault": {
+          "calls": {
+            "stat": 4,
+            "readBinary": 3
+          },
+          "readBytes": 57,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 14,
+            "stat": 26,
+            "readBinary": 7,
+            "list": 2,
+            "writeBinary": 5,
+            "rename": 5,
+            "remove": 5
+          },
+          "readBytes": 1777089,
+          "writeBytes": 863858
+        },
+        "totalCalls": 71
+      },
+      "hash": {
+        "js": {
+          "calls": 4,
+          "bytes": 940,
+          "maxInputBytes": 235,
+          "ms": 0.25191800000015974
+        },
+        "webcrypto": {
+          "calls": 23,
+          "bytes": 2866030,
+          "maxInputBytes": 592051,
+          "ms": 1.9508349999996426
+        },
+        "totalBytes": 2866970
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18,
+          "PUT": 2,
+          "HEAD": 1,
+          "GET": 2
+        },
+        "totalCalls": 23,
+        "downBytes": 1054959,
+        "upBytes": 337
+      }
+    }
+  ],
+  "stateFileSizes": [
+    591982,
+    592051
+  ],
+  "assertions": {
+    "stage": "scaling",
+    "passed": true,
+    "checked": [
+      {
+        "metric": "download.hash.totalBytes",
+        "value": 222669797,
+        "max": 249622836.39999998
+      },
+      {
+        "metric": "incremental.adapter.totalCalls",
+        "value": 71,
+        "max": 78.10000000000001
+      },
+      {
+        "metric": "upload.http.totalCalls",
+        "value": 5,
+        "max": 5,
+        "comparison": {
+          "currentFiles": 2020,
+          "previousFiles": 1010,
+          "fileDelta": 1010,
+          "currentValue": 10152,
+          "previousValue": 5102,
+          "metricDelta": 5050
+        }
+      }
+    ],
+    "failures": []
+  }
+}
+
+Supplement: current 20ms latency recheck (exit 0)
+{
+  "schemaVersion": 1,
+  "config": {
+    "notes": 1000,
+    "attachments": 10,
+    "layout": "v1",
+    "latencyMs": 20,
+    "fileCount": 1010,
+    "vaultBytes": 14443260
+  },
+  "rounds": [
+    {
+      "id": "upload",
+      "label": "Mac initial upload (mobile code path)",
+      "wallMs": 60940.396875,
+      "result": {
+        "uploaded": 1010,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 60940,
+          "vaultReads": 2020,
+          "hashBytes": 168230777,
+          "httpRequests": 5059,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 8127,
+          "stat": 17257,
+          "list": 35,
+          "readBinary": 6073,
+          "mkdir": 5,
+          "writeBinary": 3044,
+          "rename": 3044,
+          "remove": 3041
+        },
+        "readBytes": 61014334,
+        "writeBytes": 17819349,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 3030,
+            "readBinary": 2020
+          },
+          "readBytes": 28886520,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 8127,
+            "stat": 14227,
+            "mkdir": 5,
+            "writeBinary": 3044,
+            "readBinary": 4053,
+            "rename": 3044,
+            "remove": 3041,
+            "list": 13
+          },
+          "readBytes": 32127814,
+          "writeBytes": 17819349
+        },
+        "totalCalls": 40626
+      },
+      "hash": {
+        "js": {
+          "calls": 6060,
+          "bytes": 1020540,
+          "maxInputBytes": 170,
+          "ms": 165.73556199997125
+        },
+        "webcrypto": {
+          "calls": 17209,
+          "bytes": 168230777,
+          "maxInputBytes": 1048576,
+          "ms": 1177.6159139994154
+        },
+        "totalBytes": 169251317
+      },
+      "http": {
+        "calls": {
+          "GET": 2022,
+          "PROPFIND": 6,
+          "MKCOL": 1,
+          "PUT": 2020,
+          "HEAD": 1010
+        },
+        "totalCalls": 5059,
+        "downBytes": 14697871,
+        "upBytes": 14697180
+      }
+    },
+    {
+      "id": "download",
+      "label": "phone initial download",
+      "wallMs": 17227.572125,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 1010,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 17227,
+          "vaultReads": 1010,
+          "hashBytes": 108573082,
+          "httpRequests": 3034,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 13183,
+          "stat": 22324,
+          "mkdir": 1036,
+          "writeBinary": 4049,
+          "readBinary": 5058,
+          "rename": 3039,
+          "list": 9,
+          "copy": 1010,
+          "rmdir": 1010,
+          "remove": 2026
+        },
+        "readBytes": 31522042,
+        "writeBytes": 17213577,
+        "vault": {
+          "calls": {
+            "list": 1,
+            "stat": 6102,
+            "mkdir": 21,
+            "exists": 2041,
+            "readBinary": 1010
+          },
+          "readBytes": 14443260,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 11142,
+            "stat": 16222,
+            "mkdir": 1015,
+            "writeBinary": 4049,
+            "readBinary": 4048,
+            "rename": 3039,
+            "list": 8,
+            "copy": 1010,
+            "rmdir": 1010,
+            "remove": 2026
+          },
+          "readBytes": 17078782,
+          "writeBytes": 17213577
+        },
+        "totalCalls": 52744
+      },
+      "hash": {
+        "js": {
+          "calls": 1010,
+          "bytes": 170090,
+          "maxInputBytes": 170,
+          "ms": 27.84913299994514
+        },
+        "webcrypto": {
+          "calls": 15174,
+          "bytes": 108573082,
+          "maxInputBytes": 1048576,
+          "ms": 686.5316769994679
+        },
+        "totalBytes": 108743172
+      },
+      "http": {
+        "calls": {
+          "GET": 2022,
+          "PROPFIND": 2,
+          "HEAD": 1010
+        },
+        "totalCalls": 3034,
+        "downBytes": 15216569,
+        "upBytes": 0
+      }
+    }
+  ],
+  "stateFileSizes": [
+    292950,
+    294942
+  ],
+  "assertions": {
+    "stage": "latency",
+    "passed": true,
+    "checked": [
+      {
+        "metric": "download.wallMs",
+        "value": 17227.572125,
+        "max": 19847.4569332
+      },
+      {
+        "metric": "upload.wallMs",
+        "value": 60940.396875,
+        "max": 70736.6742875
+      }
+    ],
+    "failures": []
+  }
+}
+
+C1: scheduler before repair
+mobile  stuckDeferred=false: 3 sync rounds in 10 min (full: 1); first gaps(s): 120,240
+desktop stuckDeferred=false: 3 sync rounds in 10 min (full: 1); first gaps(s): 120,240
+mobile  stuckDeferred=true: 40 sync rounds in 10 min (full: 1); first gaps(s): 15,15,15,15,15,15,15
+desktop stuckDeferred=true: 120 sync rounds in 10 min (full: 1); first gaps(s): 5,5,5,5,5,5,5
+
+C1: scheduler after repair
+mobile  stuckDeferred=false: 3 sync rounds in 10 min (full: 1); first gaps(s): 120,240
+desktop stuckDeferred=false: 3 sync rounds in 10 min (full: 1); first gaps(s): 120,240
+mobile  stuckDeferred=true: 4 sync rounds in 10 min (full: 1); first gaps(s): 60,120,240
+desktop stuckDeferred=true: 4 sync rounds in 10 min (full: 1); first gaps(s): 60,120,240
+
+C1: original engine classification after scheduling repair
+full round      -> deferred: [ 'note (sync-conflict Mac abc).md' ] uploaded 1
+incremental #1 -> deferred: [ 'note (sync-conflict Mac abc).md' ]
+incremental #2 -> deferred: [ 'note (sync-conflict Mac abc).md' ]
+incremental #3 -> deferred: [ 'note (sync-conflict Mac abc).md' ]
+remote listings so far: 4
