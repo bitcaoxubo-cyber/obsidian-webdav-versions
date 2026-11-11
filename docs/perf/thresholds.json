@@ -134,11 +134,6 @@
         "layout": "v2"
       },
       {
-        "round": "upload",
-        "metric": "http.totalCalls",
-        "maxPerFile": 5
-      },
-      {
         "round": "download",
         "metric": "hash.totalBytes",
         "maxVaultMultiple": 10
@@ -164,6 +159,11 @@
         "round": "incremental",
         "metric": "adapter.totalCalls",
         "maxRatio": 1.1
+      },
+      {
+        "round": "upload",
+        "metric": "http.totalCalls",
+        "maxMarginalPerFile": 5
       }
     ],
     "latency": [

@@ -149,7 +149,7 @@ function evaluateThresholds() {
       // Absent HTTP methods/call types mean zero calls, not a missing measurement.
       let value = get(row, rule.metric);
       if (value === undefined && /^(http\.calls|adapter\.(calls|vault\.calls|private\.calls))\.[a-zA-Z]+$/.test(rule.metric)) value = 0;
-      let max = rule.max;
+      let max = rule.max, comparison;
       if ('maxPerFile' in rule) max = rule.maxPerFile * report.config.fileCount;
       if ('maxVaultMultiple' in rule) max = rule.maxVaultMultiple * report.config.vaultBytes;
       if ('maxRatio' in rule) {
@@ -158,8 +158,28 @@ function evaluateThresholds() {
         if (!Number.isFinite(old) || old <= 0) { failures.push(`${row.id}.${rule.metric}: missing positive comparison value`); continue; }
         max = old * rule.maxRatio;
       }
+      if ('maxMarginalPerFile' in rule) {
+        const name = `${row.id}.${rule.metric}`;
+        if (!previous) { failures.push(`${name}: missing comparison report`); continue; }
+        if (previous.config?.layout !== report.config.layout) { failures.push(`${name}: comparison layouts do not match`); continue; }
+        const currentFiles = report.config.fileCount, previousFiles = previous.config?.fileCount;
+        if (![currentFiles, previousFiles].every(count => Number.isSafeInteger(count) && count > 0)) {
+          failures.push(`${name}: comparison file counts must be positive safe integers`); continue;
+        }
+        const fileDelta = currentFiles - previousFiles;
+        if (!Number.isSafeInteger(fileDelta) || fileDelta <= 0) { failures.push(`${name}: comparison file delta must be positive`); continue; }
+        const baseline = Array.isArray(previous.rounds) ? previous.rounds.find(r => r.id === row.id) : undefined;
+        const old = get(baseline, rule.metric);
+        if (![old, value].every(count => Number.isSafeInteger(count) && count >= 0)) {
+          failures.push(`${name}: missing or invalid comparison value`); continue;
+        }
+        const metricDelta = value - old;
+        comparison = { currentFiles, previousFiles, fileDelta, currentValue: value, previousValue: old, metricDelta };
+        value = metricDelta / fileDelta;
+        max = rule.maxMarginalPerFile;
+      }
       const name = `${row.id}.${rule.metric}`;
-      checked.push({ metric: name, value, max });
+      checked.push({ metric: name, value, max, ...(comparison ? { comparison } : {}) });
       if (!Number.isFinite(value) || !Number.isFinite(max) || value > max) failures.push(`${name}: ${value} > ${max}`);
     }
   }
