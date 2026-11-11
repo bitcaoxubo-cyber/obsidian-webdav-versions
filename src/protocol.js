@@ -36,7 +36,9 @@ function revisionId({ path, parents, blob, device, nonce }) {
   return digest(JSON.stringify(['obsidian-webdav-versions/v1', path, parents, blob, device, nonce]));
 }
 
+const validated = new WeakSet();
 function validateRevision(rev) {
+  if (validated.has(rev)) return rev;
   if (!rev || typeof rev !== 'object' || Array.isArray(rev) ||
       Object.keys(rev).sort().join(',') !== 'blob,device,id,nonce,parents,path') {
     throw new Error('Invalid revision fields');
@@ -55,6 +57,7 @@ function validateRevision(rev) {
     }
   }
   if (rev.id !== revisionId(rev)) throw new Error('Revision checksum mismatch');
+  Object.freeze(rev.parents); Object.freeze(rev); validated.add(rev);
   return rev;
 }
 
@@ -143,8 +146,8 @@ function registerPath(used, path) {
   }
 }
 
-function project(revisions) {
-  const { byId, leaves } = indexRevisions(revisions);
+function project(revisions, index = indexRevisions(revisions)) {
+  const { byId, leaves } = index;
   const used = new Map();
   const result = new Map();
   for (const path of [...leaves.keys()].sort(compare)) {
@@ -163,4 +166,4 @@ function project(revisions) {
   return result;
 }
 
-module.exports = { makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
+module.exports = { indexRevisions, makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };

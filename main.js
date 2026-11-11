@@ -364,7 +364,7 @@ class DavRemote {
     for (const rev of revisions) {
       if (rev.blob !== null && !listing.has(rev.blob + '.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
     }
-    return structuredClone(revisions);
+    return revisions;
   }
 }
 
@@ -374,7 +374,7 @@ module.exports = { DavRemote, NAMESPACE, checkedRevision };
 "engine":function(module,exports,require){
 'use strict';
 
-const { headsFor, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
+const { indexRevisions, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
 const { base64, fromBase64, sha256 } = require('./bytes');
 
@@ -399,7 +399,8 @@ function checkSize(data, physical) {
 
 function snapshot(revisions) {
   const rows = [...revisions.values()];
-  const view = project(rows); // Also validates parent links and filename collisions.
+  const index = indexRevisions(rows);
+  const view = project(rows, index); // Also validates parent links and filename collisions.
   const byPath = new Map();
   for (const r of rows) {
     if (!byPath.has(r.path)) byPath.set(r.path, []);
@@ -408,7 +409,7 @@ function snapshot(revisions) {
   const tips = new Map();
   const versions = new Map();
   for (const [path, history] of byPath) {
-    const ids = headsFor(history, path);
+    const ids = [...index.leaves.get(path)].sort();
     tips.set(path, ids);
     const grouped = new Map();
     for (const id of ids) {
@@ -681,8 +682,10 @@ class SyncEngine {
       await this._resolve(s, selected, before, result);
     }
     const deferred = new Set();
-    await this._capture(s, selected === undefined ? before : snapshot(s.revs), result, deferred);
-    const after = snapshot(s.revs);
+    const captureView = selected === undefined ? before : snapshot(s.revs);
+    const capturedRevisionCount = s.revs.size;
+    await this._capture(s, captureView, result, deferred);
+    const after = s.revs.size === capturedRevisionCount ? captureView : snapshot(s.revs);
     await this._apply(s, after, result, deferred);
     s.reviewed.clear();
     for (const [path, versions] of after.versions) {
@@ -1768,7 +1771,9 @@ function revisionId({ path, parents, blob, device, nonce }) {
   return digest(JSON.stringify(['obsidian-webdav-versions/v1', path, parents, blob, device, nonce]));
 }
 
+const validated = new WeakSet();
 function validateRevision(rev) {
+  if (validated.has(rev)) return rev;
   if (!rev || typeof rev !== 'object' || Array.isArray(rev) ||
       Object.keys(rev).sort().join(',') !== 'blob,device,id,nonce,parents,path') {
     throw new Error('Invalid revision fields');
@@ -1787,6 +1792,7 @@ function validateRevision(rev) {
     }
   }
   if (rev.id !== revisionId(rev)) throw new Error('Revision checksum mismatch');
+  Object.freeze(rev.parents); Object.freeze(rev); validated.add(rev);
   return rev;
 }
 
@@ -1875,8 +1881,8 @@ function registerPath(used, path) {
   }
 }
 
-function project(revisions) {
-  const { byId, leaves } = indexRevisions(revisions);
+function project(revisions, index = indexRevisions(revisions)) {
+  const { byId, leaves } = index;
   const used = new Map();
   const result = new Map();
   for (const path of [...leaves.keys()].sort(compare)) {
@@ -1895,7 +1901,7 @@ function project(revisions) {
   return result;
 }
 
-module.exports = { makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
+module.exports = { indexRevisions, makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
 
 },
 "sharded":function(module,exports,require){
@@ -1987,7 +1993,7 @@ class ShardedStore extends DavRemote {
     });
     const result=ids.map(id=>this.revisions.get(id));
     for(const rev of result) if(rev.blob!==null&&!objects.has(rev.blob+'.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
-    return structuredClone(result);
+    return result;
   }
 }
 

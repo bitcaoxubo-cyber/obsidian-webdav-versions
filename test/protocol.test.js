@@ -104,3 +104,13 @@ test('long multibyte stems are shortened only on conflict copies', () => {
   assert.ok(result.has(path));
   for (const key of result.keys()) assert.ok(Buffer.byteLength(key) <= 255);
 });
+
+test('A4: validated revisions and parent lists are immutable; copies still validate fully', () => {
+  const a = write('frozen-a', 'base'), b = write('frozen-b', 'next', [a]);
+  assert.ok(Object.isFrozen(b)); assert.ok(Object.isFrozen(b.parents));
+  assert.equal(validateRevision(b), b);
+  assert.throws(() => { b.blob = a.blob; }, TypeError);
+  assert.throws(() => { b.parents.push(a.id); }, TypeError);
+  const tampered = structuredClone(b); tampered.blob = a.blob;
+  assert.throws(() => validateRevision(tampered), /checksum/);
+});

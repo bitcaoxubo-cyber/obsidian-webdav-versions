@@ -279,7 +279,7 @@ class DavRemote {
     for (const rev of revisions) {
       if (rev.blob !== null && !listing.has(rev.blob + '.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
     }
-    return structuredClone(revisions);
+    return revisions;
   }
 }
 

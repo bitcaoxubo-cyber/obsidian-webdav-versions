@@ -86,7 +86,7 @@ class ShardedStore extends DavRemote {
     });
     const result=ids.map(id=>this.revisions.get(id));
     for(const rev of result) if(rev.blob!==null&&!objects.has(rev.blob+'.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
-    return structuredClone(result);
+    return result;
   }
 }
 

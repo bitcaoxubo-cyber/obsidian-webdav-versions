@@ -1,6 +1,6 @@
 'use strict';
 
-const { headsFor, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
+const { indexRevisions, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
 const { base64, fromBase64, sha256 } = require('./bytes');
 
@@ -25,7 +25,8 @@ function checkSize(data, physical) {
 
 function snapshot(revisions) {
   const rows = [...revisions.values()];
-  const view = project(rows); // Also validates parent links and filename collisions.
+  const index = indexRevisions(rows);
+  const view = project(rows, index); // Also validates parent links and filename collisions.
   const byPath = new Map();
   for (const r of rows) {
     if (!byPath.has(r.path)) byPath.set(r.path, []);
@@ -34,7 +35,7 @@ function snapshot(revisions) {
   const tips = new Map();
   const versions = new Map();
   for (const [path, history] of byPath) {
-    const ids = headsFor(history, path);
+    const ids = [...index.leaves.get(path)].sort();
     tips.set(path, ids);
     const grouped = new Map();
     for (const id of ids) {
@@ -307,8 +308,10 @@ class SyncEngine {
       await this._resolve(s, selected, before, result);
     }
     const deferred = new Set();
-    await this._capture(s, selected === undefined ? before : snapshot(s.revs), result, deferred);
-    const after = snapshot(s.revs);
+    const captureView = selected === undefined ? before : snapshot(s.revs);
+    const capturedRevisionCount = s.revs.size;
+    await this._capture(s, captureView, result, deferred);
+    const after = s.revs.size === capturedRevisionCount ? captureView : snapshot(s.revs);
     await this._apply(s, after, result, deferred);
     s.reviewed.clear();
     for (const [path, versions] of after.versions) {
