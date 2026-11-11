@@ -2,9 +2,9 @@
 // leopard530/obsidian-sync-webdav. Immutable storage, integrity checks, strict
 // multistatus handling and the non-redirecting HTTPS transport are new.
 'use strict';
-const { bytes, base64 } = require('./bytes');
+const { bytes, base64, sha256 } = require('./bytes');
 const sax = require('./vendor/sax');
-const { digest, validateRevision } = require('./protocol');
+const { validateRevision } = require('./protocol');
 
 const NAMESPACE = 'obsidian-webdav-versions-v1';
 const HASH = /^[0-9a-f]{64}$/;
@@ -144,17 +144,28 @@ class DavRemote {
     this.auth = username || password ? 'Basic ' + base64(username + ':' + password) : '';
     this.revisions = new Map();
     this.verifiedBlobs = new Set();
+    this.objectInventory = null; // null means no complete directory inventory yet.
+    this.confirmedPuts = new Set();
+    this.uncertainPuts = new Set();
     this.created = false;
+    this.blobPreflights = new Map();
   }
 
-  async call(method, url, headers, body, limit) {
+  async hashOf(value) {
+    if (this.stats) this.stats.hashBytes += bytes(value).length;
+    return sha256(value);
+  }
+
+  async call(method, url, headers, body, limit, preflight) {
     if (url.origin !== this.base.origin) throw new Error('已阻止跨站 WebDAV 请求。');
     headers = { 'Accept-Encoding': 'identity', ...headers };
     if (this.auth) headers.Authorization = this.auth;
     if (body !== undefined) headers['Content-Length'] = String(body.length);
     let result;
     try {
-      result = await this.request({ method, url, headers, body, limit });
+      if (this.request.tracksStats) this.request.stats = this.stats;
+      else if (this.stats) this.stats.httpRequests++;
+      result = await this.request({ method, url, headers, body, limit, preflight });
     } catch (err) {
       // TLS and transport exceptions may contain user information or signed URLs.
       const mobileMessages = {
@@ -184,48 +195,113 @@ class DavRemote {
   }
   async ensureFolder() {
     if (this.created) return;
-    await this.probe();
-    if (await this.propfind(this.folder, 0, true) === null) {
-      const r = await this.call('MKCOL', this.folder, {}, undefined, REV_LIMIT);
-      if (![200, 201, 204, 405].includes(r.status)) throw httpError('MKCOL', r.status);
-      // 405 can mean "exists" OR "operation not supported".
-      await this.propfind(this.folder, 0);
-    }
-    this.created = true;
+    const creating = this.creating ||= (async () => {
+      await this.probe();
+      if (await this.propfind(this.folder, 0, true) === null) {
+        const r = await this.call('MKCOL', this.folder, {}, undefined, REV_LIMIT);
+        if (![200, 201, 204, 405].includes(r.status)) throw httpError('MKCOL', r.status);
+        // 405 can mean "exists" OR "operation not supported".
+        await this.propfind(this.folder, 0);
+      }
+      this.created = true;
+    })();
+    try { await creating; }
+    finally { if (this.creating === creating) this.creating = null; }
   }
   objectURL(id, suffix) {
     checkHash(id);
     return new URL(id + suffix, this.folder);
   }
-  async read(url, limit, missingOK = false) {
-    const r = await this.call('GET', url, {}, undefined, limit);
+  async read(url, limit, missingOK = false, preflight) {
+    const r = await this.call('GET', url, {}, undefined, limit, preflight);
     if (missingOK && r.status === 404) return null;
     if (r.status !== 200) throw httpError('GET', r.status);
     return r.body;
   }
+  rememberObjects(urls) {
+    this.objectInventory = new Set(urls);
+    // Reuse covers preupload and serial publication in this listing epoch only.
+    // Existing objects in a fresh listing must take the usual GET verification.
+    this.confirmedPuts.clear();
+  }
+  addressedObject(url) {
+    const match = /\/([a-f0-9]{64})\.(blob|json)$/.exec(url.pathname);
+    return !!match && this.objectURL(match[1], '.' + match[2]).href === url.href;
+  }
   async immutable(url, data, type, limit, verify) {
     await this.ensureFolder();
-    const previous = await this.read(url, limit, true);
-    if (previous !== null) { verify(previous); return; }
+    const addressed = this.addressedObject(url), key = url.href;
+    const confirm = () => {
+      if (!addressed) return;
+      this.confirmedPuts.add(key);
+      this.objectInventory?.add(key);
+      this.uncertainPuts.delete(key);
+    };
+    // A verified put can be reused until the next listing (B4 preupload).
+    // Marker files are not content-addressed and retain the original read path.
+    if (addressed && this.confirmedPuts.has(key)) return;
+    if (!addressed || this.objectInventory === null || this.objectInventory.has(key) || this.uncertainPuts.has(key)) {
+      const previous = await this.read(url, limit, true);
+      if (previous !== null) { await verify(previous); confirm(); return; }
+    }
+    // Lost responses leave uncertain outcomes: probe before retrying even if
+    // the last inventory preceded this attempt.
+    if (addressed) this.uncertainPuts.add(key);
     const r = await this.call('PUT', url, { 'If-None-Match': '*', 'Content-Type': type }, data, REV_LIMIT);
     if (![200, 201, 204, 412].includes(r.status)) throw httpError('PUT', r.status);
     // Even 412 can be another honest client writing the same hash. A weak DAV
     // can ignore the precondition. All honest writers use the same content ID.
-    verify(await this.read(url, limit));
+    await verify(await this.read(url, limit));
+    confirm();
   }
-  async getBlob(id) {
-    const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
-    if (digest(bytes) !== id) throw integrity();
-    this.verifiedBlobs.add(id);
-    return bytes;
+  clearBlobPreflights() { this.blobPreflights.clear(); }
+  async getBlobSize(id) {
+    const url = this.objectURL(id, '.blob');
+    try {
+      const head = await this.call('HEAD', url, {}, undefined, REV_LIMIT);
+      const headers = Object.fromEntries(Object.entries(head.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
+      const length = headers['content-length'];
+      const size = /^\d+$/.test(length || '') ? Number(length) : NaN;
+      if (head.status !== 200 || !Number.isSafeInteger(size) || size < 0) {
+        // Desktop previously needed only GET. Missing HEAD support keeps that
+        // compatibility, with the engine reserving the full per-file upper bound.
+        if (this.request.requiresBlobHead) throw new Error('手机同步需要服务器支持 HEAD 并返回 Content-Length；请检查 WebDAV 直连地址。');
+        return null;
+      }
+      const limit = Math.min(BLOB_LIMIT, this.request.blobLimit ?? BLOB_LIMIT);
+      if (size > limit) throw new Error(this.request.requiresBlobHead ? '手机单个文件或响应超过 128 MiB；已暂停同步。' : '单个附件超过 WebDAV 的 512 MiB 限制。');
+      const reservations = this.blobPreflights.get(id) || [];
+      reservations.push({ url: url.href, status: head.status, headers, size });
+      this.blobPreflights.set(id, reservations);
+      return size;
+    } catch (error) { this.clearBlobPreflights(); throw error; }
+  }
+  async getBlob(id, expectedSize) {
+    if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > BLOB_LIMIT)) {
+      throw new Error('Invalid blob size reservation');
+    }
+    const reservations = this.blobPreflights.get(id) || [];
+    // HEADs for a shared blob can finish out of order. Match the caller's own
+    // reservation, and consume only that entry; later batches keep their slots.
+    const index = expectedSize === undefined ? 0 : reservations.findIndex(entry => entry.size === expectedSize);
+    const preflight = index >= 0 ? reservations.splice(index, 1)[0] : undefined;
+    if (!reservations.length) this.blobPreflights.delete(id);
+    try {
+      const limit = expectedSize ?? preflight?.size ?? BLOB_LIMIT;
+      const bytes = await this.read(this.objectURL(id, '.blob'), limit, false, preflight);
+      if (preflight && bytes.byteLength !== preflight.size) throw new Error('WebDAV 附件大小与预检不符；已停止同步。');
+      if (await this.hashOf(bytes) !== id) throw integrity();
+      this.verifiedBlobs.add(id);
+      return bytes;
+    } catch (error) { this.clearBlobPreflights(); throw error; }
   }
   async putBlob(id, data) {
     checkHash(id);
     const dataBytes = bytes(data);
     if (dataBytes.length > BLOB_LIMIT) throw new Error('单个附件超过 WebDAV 的 512 MiB 限制。');
-    if (digest(dataBytes) !== id) throw integrity();
-    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, got => {
-      if (digest(got) !== id) throw integrity();
+    if (await this.hashOf(dataBytes) !== id) throw integrity();
+    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, async got => {
+      if (await this.hashOf(got) !== id) throw integrity();
     });
     this.verifiedBlobs.add(id);
   }
@@ -241,10 +317,12 @@ class DavRemote {
     this.revisions.set(snapshot.id, snapshot);
   }
   async listRevisions() {
+    this.clearBlobPreflights();
     const listing = await this.propfind(this.folder, 1, true);
     if (listing === null) {
       if (this.revisions.size || this.created) throw new Error('远端版本目录消失；已停止同步。');
       await this.probe(); // do not mistake an incorrect URL/inaccessible parent for an empty store
+      this.rememberObjects([]);
       return [];
     }
     this.created = true;
@@ -255,6 +333,7 @@ class DavRemote {
       if (collection || !match) throw new Error('专用 WebDAV 版本目录内存在未知条目；已停止同步。');
       if (match[2] === 'json') ids.push(match[1]);
     }
+    this.rememberObjects([...listing.keys()].map(name => new URL(name, this.folder).href));
     for (const id of this.revisions.keys()) {
       if (!listing.has(id + '.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
     }
@@ -272,7 +351,7 @@ class DavRemote {
     for (const rev of revisions) {
       if (rev.blob !== null && !listing.has(rev.blob + '.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
     }
-    return structuredClone(revisions);
+    return revisions;
   }
 }
 

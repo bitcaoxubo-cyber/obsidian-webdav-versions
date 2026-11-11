@@ -1,0 +1,621 @@
+{
+  "schemaVersion": 1,
+  "config": {
+    "notes": 1000,
+    "attachments": 10,
+    "layout": "v2",
+    "latencyMs": 0,
+    "fileCount": 1010,
+    "vaultBytes": 14443260
+  },
+  "rounds": [
+    {
+      "id": "upload",
+      "label": "Mac initial upload (mobile code path)",
+      "wallMs": 400.016792,
+      "result": {
+        "uploaded": 1010,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 400,
+          "vaultReads": 2020,
+          "hashBytes": 165232761,
+          "httpRequests": 5102,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 8106,
+          "stat": 17222,
+          "list": 28,
+          "readBinary": 6066,
+          "mkdir": 5,
+          "writeBinary": 3037,
+          "rename": 3037,
+          "remove": 3034
+        },
+        "readBytes": 59996107,
+        "writeBytes": 16801122,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 3030,
+            "readBinary": 2020
+          },
+          "readBytes": 28886520,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 8106,
+            "stat": 14192,
+            "mkdir": 5,
+            "writeBinary": 3037,
+            "readBinary": 4046,
+            "rename": 3037,
+            "remove": 3034,
+            "list": 6
+          },
+          "readBytes": 31109587,
+          "writeBytes": 16801122
+        },
+        "totalCalls": 40535
+      },
+      "hash": {
+        "js": {
+          "calls": 6060,
+          "bytes": 1020540,
+          "maxInputBytes": 170,
+          "ms": 44.55777899999873
+        },
+        "webcrypto": {
+          "calls": 17188,
+          "bytes": 165232761,
+          "maxInputBytes": 1048576,
+          "ms": 276.33316600000234
+        },
+        "totalBytes": 166253301
+      },
+      "http": {
+        "calls": {
+          "GET": 2022,
+          "PROPFIND": 34,
+          "MKCOL": 16,
+          "PUT": 2020,
+          "HEAD": 1010
+        },
+        "totalCalls": 5102,
+        "downBytes": 14701684,
+        "upBytes": 14697180
+      }
+    },
+    {
+      "id": "download",
+      "label": "phone initial download",
+      "wallMs": 344.39500000000004,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 1010,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 344,
+          "vaultReads": 1010,
+          "hashBytes": 108361578,
+          "httpRequests": 3050,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 13180,
+          "stat": 22319,
+          "mkdir": 1036,
+          "writeBinary": 4048,
+          "readBinary": 5057,
+          "rename": 3038,
+          "list": 8,
+          "copy": 1010,
+          "rmdir": 1010,
+          "remove": 2025
+        },
+        "readBytes": 31450801,
+        "writeBytes": 17142336,
+        "vault": {
+          "calls": {
+            "list": 1,
+            "stat": 6102,
+            "mkdir": 21,
+            "exists": 2041,
+            "readBinary": 1010
+          },
+          "readBytes": 14443260,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 11139,
+            "stat": 16217,
+            "mkdir": 1015,
+            "writeBinary": 4048,
+            "readBinary": 4047,
+            "rename": 3038,
+            "list": 7,
+            "copy": 1010,
+            "rmdir": 1010,
+            "remove": 2025
+          },
+          "readBytes": 17007541,
+          "writeBytes": 17142336
+        },
+        "totalCalls": 52731
+      },
+      "hash": {
+        "js": {
+          "calls": 1010,
+          "bytes": 170090,
+          "maxInputBytes": 170,
+          "ms": 5.862914999998964
+        },
+        "webcrypto": {
+          "calls": 15171,
+          "bytes": 108361578,
+          "maxInputBytes": 1048576,
+          "ms": 184.9809579999894
+        },
+        "totalBytes": 108531668
+      },
+      "http": {
+        "calls": {
+          "GET": 2022,
+          "PROPFIND": 18,
+          "HEAD": 1010
+        },
+        "totalCalls": 3050,
+        "downBytes": 15228144,
+        "upBytes": 0
+      }
+    },
+    {
+      "id": "idle",
+      "label": "phone IDLE sync (nothing changed anywhere)",
+      "wallMs": 30.228500000000054,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 31,
+          "vaultReads": 0,
+          "hashBytes": 555260,
+          "httpRequests": 18,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 1,
+          "stat": 1016,
+          "readBinary": 2,
+          "list": 24
+        },
+        "readBytes": 587670,
+        "writeBytes": 0,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 1010
+          },
+          "readBytes": 0,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 1,
+            "stat": 6,
+            "readBinary": 2,
+            "list": 2
+          },
+          "readBytes": 587670,
+          "writeBytes": 0
+        },
+        "totalCalls": 1043
+      },
+      "hash": {
+        "js": {
+          "calls": 0,
+          "bytes": 0,
+          "maxInputBytes": 0,
+          "ms": 0
+        },
+        "webcrypto": {
+          "calls": 2,
+          "bytes": 555260,
+          "maxInputBytes": 278667,
+          "ms": 0.20783300000005056
+        },
+        "totalBytes": 555260
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18
+        },
+        "totalCalls": 18,
+        "downBytes": 530924,
+        "upBytes": 0
+      }
+    },
+    {
+      "id": "edit",
+      "label": "phone sync after editing ONE note",
+      "wallMs": 32.13141699999994,
+      "result": {
+        "uploaded": 1,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 32,
+          "vaultReads": 3,
+          "hashBytes": 1427252,
+          "httpRequests": 23,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 14,
+          "stat": 1039,
+          "readBinary": 10,
+          "list": 24,
+          "writeBinary": 5,
+          "rename": 5,
+          "remove": 5
+        },
+        "readBytes": 883856,
+        "writeBytes": 430923,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 1013,
+            "readBinary": 3
+          },
+          "readBytes": 42,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 14,
+            "stat": 26,
+            "readBinary": 7,
+            "list": 2,
+            "writeBinary": 5,
+            "rename": 5,
+            "remove": 5
+          },
+          "readBytes": 883814,
+          "writeBytes": 430923
+        },
+        "totalCalls": 1102
+      },
+      "hash": {
+        "js": {
+          "calls": 4,
+          "bytes": 940,
+          "maxInputBytes": 235,
+          "ms": 0.2469579999999496
+        },
+        "webcrypto": {
+          "calls": 23,
+          "bytes": 1427252,
+          "maxInputBytes": 295011,
+          "ms": 1.056248000000437
+        },
+        "totalBytes": 1428192
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18,
+          "PUT": 2,
+          "HEAD": 1,
+          "GET": 2
+        },
+        "totalCalls": 23,
+        "downBytes": 531256,
+        "upBytes": 332
+      }
+    },
+    {
+      "id": "idle2",
+      "label": "phone second IDLE sync",
+      "wallMs": 44.076124999999934,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 44,
+          "vaultReads": 0,
+          "hashBytes": 557401,
+          "httpRequests": 18,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 1,
+          "stat": 1016,
+          "readBinary": 2,
+          "list": 24
+        },
+        "readBytes": 589953,
+        "writeBytes": 0,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 1010
+          },
+          "readBytes": 0,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 1,
+            "stat": 6,
+            "readBinary": 2,
+            "list": 2
+          },
+          "readBytes": 589953,
+          "writeBytes": 0
+        },
+        "totalCalls": 1043
+      },
+      "hash": {
+        "js": {
+          "calls": 0,
+          "bytes": 0,
+          "maxInputBytes": 0,
+          "ms": 0
+        },
+        "webcrypto": {
+          "calls": 2,
+          "bytes": 557401,
+          "maxInputBytes": 278734,
+          "ms": 0.22533199999998033
+        },
+        "totalBytes": 557401
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18
+        },
+        "totalCalls": 18,
+        "downBytes": 531442,
+        "upBytes": 0
+      }
+    },
+    {
+      "id": "incremental",
+      "label": "phone incremental sync after editing ONE note",
+      "wallMs": 27.771082999999976,
+      "result": {
+        "uploaded": 1,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 28,
+          "vaultReads": 3,
+          "hashBytes": 1429658,
+          "httpRequests": 23,
+          "full": 0
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 14,
+          "stat": 30,
+          "readBinary": 10,
+          "list": 2,
+          "writeBinary": 5,
+          "rename": 5,
+          "remove": 5
+        },
+        "readBytes": 886233,
+        "writeBytes": 430997,
+        "vault": {
+          "calls": {
+            "stat": 4,
+            "readBinary": 3
+          },
+          "readBytes": 57,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 14,
+            "stat": 26,
+            "readBinary": 7,
+            "list": 2,
+            "writeBinary": 5,
+            "rename": 5,
+            "remove": 5
+          },
+          "readBytes": 886176,
+          "writeBytes": 430997
+        },
+        "totalCalls": 71
+      },
+      "hash": {
+        "js": {
+          "calls": 4,
+          "bytes": 940,
+          "maxInputBytes": 235,
+          "ms": 0.043627000000128646
+        },
+        "webcrypto": {
+          "calls": 23,
+          "bytes": 1429658,
+          "maxInputBytes": 295080,
+          "ms": 0.7641710000001467
+        },
+        "totalBytes": 1430598
+      },
+      "http": {
+        "calls": {
+          "PROPFIND": 18,
+          "PUT": 2,
+          "HEAD": 1,
+          "GET": 2
+        },
+        "totalCalls": 23,
+        "downBytes": 531779,
+        "upBytes": 337
+      }
+    }
+  ],
+  "stateFileSizes": [
+    295011,
+    295080
+  ],
+  "assertions": {
+    "stage": "B",
+    "passed": true,
+    "checked": [
+      {
+        "metric": "idle.adapter.vault.calls.readBinary",
+        "value": 0,
+        "max": 0
+      },
+      {
+        "metric": "idle2.adapter.vault.calls.readBinary",
+        "value": 0,
+        "max": 0
+      },
+      {
+        "metric": "idle.hash.js.calls",
+        "value": 0,
+        "max": 20
+      },
+      {
+        "metric": "idle.hash.js.bytes",
+        "value": 0,
+        "max": 104857.6
+      },
+      {
+        "metric": "idle2.hash.js.calls",
+        "value": 0,
+        "max": 20
+      },
+      {
+        "metric": "idle2.hash.js.bytes",
+        "value": 0,
+        "max": 104857.6
+      },
+      {
+        "metric": "upload.hash.js.maxInputBytes",
+        "value": 170,
+        "max": 65536
+      },
+      {
+        "metric": "download.hash.js.maxInputBytes",
+        "value": 170,
+        "max": 65536
+      },
+      {
+        "metric": "idle.hash.js.maxInputBytes",
+        "value": 0,
+        "max": 65536
+      },
+      {
+        "metric": "edit.hash.js.maxInputBytes",
+        "value": 235,
+        "max": 65536
+      },
+      {
+        "metric": "idle2.hash.js.maxInputBytes",
+        "value": 0,
+        "max": 65536
+      },
+      {
+        "metric": "incremental.hash.js.maxInputBytes",
+        "value": 235,
+        "max": 65536
+      },
+      {
+        "metric": "incremental.adapter.totalCalls",
+        "value": 71,
+        "max": 100
+      },
+      {
+        "metric": "idle.adapter.totalCalls",
+        "value": 1043,
+        "max": 1100
+      },
+      {
+        "metric": "idle2.adapter.totalCalls",
+        "value": 1043,
+        "max": 1100
+      },
+      {
+        "metric": "idle.adapter.calls.writeBinary",
+        "value": 0,
+        "max": 0
+      },
+      {
+        "metric": "idle2.adapter.calls.writeBinary",
+        "value": 0,
+        "max": 0
+      },
+      {
+        "metric": "idle.http.totalCalls",
+        "value": 18,
+        "max": 18
+      },
+      {
+        "metric": "idle.http.calls.GET",
+        "value": 0,
+        "max": 0
+      },
+      {
+        "metric": "download.hash.totalBytes",
+        "value": 108531668,
+        "max": 144432600
+      },
+      {
+        "metric": "download.adapter.readBytes",
+        "value": 31450801,
+        "max": 115546080
+      },
+      {
+        "metric": "download.adapter.writeBytes",
+        "value": 17142336,
+        "max": 57773040
+      }
+    ],
+    "failures": []
+  }
+}

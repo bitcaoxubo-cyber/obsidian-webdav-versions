@@ -12,7 +12,7 @@ function fixture(cap=10000) {
   const response=(p,dir)=>`<d:response><d:href>${p}</d:href><d:propstat><d:prop><d:resourcetype>${dir?'<d:collection/>':''}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
   const request=async({url,method,headers,body})=>{
     const p=url.pathname;calls.push({method,path:p});
-    const send=(status,b='')=>({status,body:Buffer.from(b),headers:{}});
+    const send=(status,b='',headers={})=>({status,body:Buffer.from(b),headers});
     await f.hook({phase:'before',method,p,headers});
     if(method==='PROPFIND') {
       if(!dirs.has(p)) return send(404);
@@ -20,6 +20,7 @@ function fixture(cap=10000) {
       const entries=headers.Depth==='0'?[]:[...files.keys(),...dirs].filter(immediate).slice(0,p===v1?f.cap:Infinity);
       return send(207,'<d:multistatus xmlns:d="DAV:">'+response(p,true)+entries.map(n=>response(n,dirs.has(n))).join('')+'</d:multistatus>');
     }
+    if(method==='HEAD') return files.has(p)?send(200,'',{'Content-Length':String(files.get(p).length)}):send(404);
     if(method==='GET') return files.has(p)?send(200,files.get(p)):send(404);
     if(method==='MKCOL'){if(dirs.has(p))return send(405);dirs.add(p);return send(201);}
     if(method==='PUT'){files.set(p,Buffer.from(body));return send(201);}
@@ -116,4 +117,92 @@ test('rollback restores the original flat objects byte-for-byte and archives met
   assert.equal(f.dirs.has(v2),false);assert.equal(f.files.has(v1+MARKER),false);
   assert.ok(!f.calls.some(x=>x.method==='DELETE'));
   assert.equal([...f.files.keys()].filter(p=>p.startsWith(v1)).length,before.size);
+});
+
+test('B3: selected v2 validates format only once while uploading ten files', async () => {
+  const f = fixture(); f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+  const client = new AdaptiveDavRemote(f.options);
+  await client.listRevisions();
+  for (let i = 0; i < 10; i++) {
+    const body = bytes('B3 upload ' + i), hash = digest(body);
+    await client.putBlob(hash, body);
+    await client.putRevision(makeRevision({ path: 'B3-' + i + '.md', blob: hash, device: 'test' }));
+  }
+  assert.equal(f.calls.filter(c => c.method === 'GET' && c.path === v2 + 'format.json').length, 1);
+});
+
+test('B5: cached v1 idle poll uses two PROPFIND requests and notices completed migration', async () => {
+  const f = fixture(); const rows = seed(f, 2); const client = new AdaptiveDavRemote(f.options);
+  await client.listRevisions(); f.calls.length = 0;
+  assert.equal((await client.listRevisions()).length, rows.length);
+  assert.deepEqual(f.calls.map(c => [c.method, c.path]), [['PROPFIND', v2], ['PROPFIND', v1]]);
+  await migrateStorage(f.options, backups());
+  assert.equal((await client.listRevisions()).length, rows.length);
+  assert.equal(client.selected, client.sharded);
+});
+
+test('B5: cached v1 pauses when another device starts an incomplete migration', async () => {
+  const f = fixture(); seed(f, 1); const client = new AdaptiveDavRemote(f.options);
+  await client.listRevisions(); f.dirs.add(v2);
+  await assert.rejects(client.listRevisions(), /迁移未完成/);
+  assert.equal(client.selected, null);
+});
+
+test('B5: cached v2 idle poll has at most eighteen requests with no GET and detects rollback from root inventory', async () => {
+  const f = fixture(); f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+  for (const bucket of '0123456789abcdef') f.dirs.add(v2 + bucket + '/');
+  const client = new AdaptiveDavRemote(f.options); await client.listRevisions(); f.calls.length = 0;
+  await client.listRevisions();
+  assert.equal(f.calls.length, 18);
+  assert.equal(f.calls.filter(c => c.method === 'GET').length, 0);
+  f.files.set(v2 + 'rollback.json', Buffer.from('{}')); f.calls.length = 0;
+  await assert.rejects(client.listRevisions(), /回退/);
+  assert.equal(f.calls.filter(c => c.method === 'GET').length, 0);
+  assert.equal(client.selected, null);
+});
+
+test('B5: a failed cached listing clears layout selection and revalidates format on the next round', async () => {
+  const f = fixture(); f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+  const client = new AdaptiveDavRemote(f.options); await client.listRevisions();
+  f.hook = async ({ method, p }) => { if (method === 'PROPFIND' && p === v2) throw new Error('offline'); };
+  await assert.rejects(client.listRevisions(), /传输失败/);
+  assert.equal(client.selected, null);
+  f.hook = async () => {}; f.files.set(v2 + 'format.json', Buffer.from('{"version":999}')); f.calls.length = 0;
+  await assert.rejects(client.listRevisions(), /不支持/);
+  assert.ok(f.calls.some(c => c.method === 'GET' && c.path === v2 + 'format.json'));
+});
+
+test('B5: cached v2 still detects old-client writes and a missing format marker', async () => {
+  const f = fixture(); const rows = seed(f, 1); await migrateStorage(f.options, backups());
+  const client = new AdaptiveDavRemote(f.options); await client.listRevisions();
+  f.files.set(v1 + rows[0].id + '.json', Buffer.from(JSON.stringify(rows[0])));
+  await assert.rejects(client.listRevisions(), /旧目录仍有/);
+  f.files.delete(v1 + rows[0].id + '.json'); await client.listRevisions();
+  f.files.delete(v2 + 'format.json');
+  await assert.rejects(client.listRevisions(), /迁移/);
+});
+
+
+for (const layout of ['v1', 'v2']) test(`B2: mobile ${layout} uploads use five requests per new file and verified preuploads cost zero`, async () => {
+  const { mobileRequest } = require('../src/mobile');
+  const { arrayBuffer } = require('../src/bytes');
+  const f = fixture();
+  if (layout === 'v2') {
+    f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+    for (const bucket of '0123456789abcdef') f.dirs.add(v2 + bucket + '/');
+  }
+  const client = new AdaptiveDavRemote({ ...f.options, request: mobileRequest(async args => {
+    const response = await f.options.request({ ...args, url: new URL(args.url) });
+    return { status: response.status, headers: response.headers, arrayBuffer: arrayBuffer(response.body) };
+  }) });
+  await client.listRevisions(); f.calls.length = 0;
+  for (let i = 0; i < 10; i++) {
+    const body = bytes('mobile B2 body ' + i), hash = digest(body), before = f.calls.length;
+    await client.putBlob(hash, body);
+    await client.putRevision(makeRevision({ path: 'B2-' + i + '.md', blob: hash, device: 'phone' }));
+    assert.deepEqual(f.calls.slice(before).map(c => c.method), ['PUT', 'HEAD', 'GET', 'PUT', 'GET']);
+    const verified = f.calls.length; await client.putBlob(hash, body);
+    assert.equal(f.calls.length, verified);
+  }
+  assert.equal(f.calls.length, 50);
 });

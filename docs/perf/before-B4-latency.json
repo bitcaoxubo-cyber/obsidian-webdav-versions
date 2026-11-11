@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "config": {
+    "notes": 1000,
+    "attachments": 10,
+    "layout": "v1",
+    "latencyMs": 20,
+    "fileCount": 1010,
+    "vaultBytes": 14443260
+  },
+  "rounds": [
+    {
+      "id": "upload",
+      "label": "Mac initial upload (mobile code path)",
+      "wallMs": 108825.65275,
+      "result": {
+        "uploaded": 1010,
+        "downloaded": 0,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 108826,
+          "vaultReads": 2020,
+          "hashBytes": 157510166,
+          "httpRequests": 5059,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 8154,
+          "stat": 17302,
+          "list": 44,
+          "readBinary": 6082,
+          "mkdir": 5,
+          "writeBinary": 3053,
+          "rename": 3053,
+          "remove": 3050
+        },
+        "readBytes": 62278685,
+        "writeBytes": 19083700,
+        "vault": {
+          "calls": {
+            "list": 22,
+            "stat": 3030,
+            "readBinary": 2020
+          },
+          "readBytes": 28886520,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 8154,
+            "stat": 14272,
+            "mkdir": 5,
+            "writeBinary": 3053,
+            "readBinary": 4062,
+            "rename": 3053,
+            "remove": 3050,
+            "list": 22
+          },
+          "readBytes": 33392165,
+          "writeBytes": 19083700
+        },
+        "totalCalls": 40743
+      },
+      "hash": {
+        "js": {
+          "calls": 6060,
+          "bytes": 1020540,
+          "maxInputBytes": 170,
+          "ms": 164.7532249996453
+        },
+        "webcrypto": {
+          "calls": 16226,
+          "bytes": 157510166,
+          "maxInputBytes": 1048576,
+          "ms": 904.8524079997451
+        },
+        "totalBytes": 158530706
+      },
+      "http": {
+        "calls": {
+          "GET": 2022,
+          "PROPFIND": 6,
+          "MKCOL": 1,
+          "PUT": 2020,
+          "HEAD": 1010
+        },
+        "totalCalls": 5059,
+        "downBytes": 14697871,
+        "upBytes": 14697180
+      }
+    },
+    {
+      "id": "download",
+      "label": "phone initial download",
+      "wallMs": 49618.642332999996,
+      "result": {
+        "uploaded": 0,
+        "downloaded": 1010,
+        "deleted": 0,
+        "conflicts": 0,
+        "deferred": 0,
+        "conflictPaths": [],
+        "deferredPaths": [],
+        "stats": {
+          "durationMs": 49619,
+          "vaultReads": 1010,
+          "hashBytes": 109730033,
+          "httpRequests": 3034,
+          "full": 1
+        }
+      },
+      "adapter": {
+        "calls": {
+          "exists": 13189,
+          "stat": 22334,
+          "mkdir": 1036,
+          "writeBinary": 4051,
+          "readBinary": 5060,
+          "rename": 3041,
+          "list": 11,
+          "copy": 1010,
+          "rmdir": 1010,
+          "remove": 2028
+        },
+        "readBytes": 31914394,
+        "writeBytes": 17605929,
+        "vault": {
+          "calls": {
+            "list": 1,
+            "stat": 6102,
+            "mkdir": 21,
+            "exists": 2041,
+            "readBinary": 1010
+          },
+          "readBytes": 14443260,
+          "writeBytes": 0
+        },
+        "private": {
+          "calls": {
+            "exists": 11148,
+            "stat": 16232,
+            "mkdir": 1015,
+            "writeBinary": 4051,
+            "readBinary": 4050,
+            "rename": 3041,
+            "list": 10,
+            "copy": 1010,
+            "rmdir": 1010,
+            "remove": 2028
+          },
+          "readBytes": 17471134,
+          "writeBytes": 17605929
+        },
+        "totalCalls": 52770
+      },
+      "hash": {
+        "js": {
+          "calls": 1010,
+          "bytes": 170090,
+          "maxInputBytes": 170,
+          "ms": 21.989827000026708
+        },
+        "webcrypto": {
+          "calls": 15180,
+          "bytes": 109730033,
+          "maxInputBytes": 1048576,
+          "ms": 727.4362279990601
+        },
+        "totalBytes": 109900123
+      },
+      "http": {
+        "calls": {
+          "GET": 2022,
+          "PROPFIND": 2,
+          "HEAD": 1010
+        },
+        "totalCalls": 3034,
+        "downBytes": 15216569,
+        "upBytes": 0
+      }
+    }
+  ],
+  "stateFileSizes": [
+    275205,
+    294943
+  ]
+}

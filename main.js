@@ -71,7 +71,15 @@ function digest(value) {
   block(tail,0); if (tail.length === 128) block(tail,64);
   return [...h].map(n => n.toString(16).padStart(8,'0')).join('');
 }
-module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest };
+// Large content hashes run in the host's asynchronous native crypto implementation.
+// Revision identifiers retain digest(), preserving the protocol's synchronous API.
+async function sha256(value) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle?.digest) return module.exports.digest(value);
+  const result = await subtle.digest('SHA-256', bytes(value));
+  return [...new Uint8Array(result)].map(n => n.toString(16).padStart(2, '0')).join('');
+}
+module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest, sha256 };
 
 },
 "dav":function(module,exports,require){
@@ -79,9 +87,9 @@ module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, ran
 // leopard530/obsidian-sync-webdav. Immutable storage, integrity checks, strict
 // multistatus handling and the non-redirecting HTTPS transport are new.
 'use strict';
-const { bytes, base64 } = require('./bytes');
+const { bytes, base64, sha256 } = require('./bytes');
 const sax = require('./vendor/sax');
-const { digest, validateRevision } = require('./protocol');
+const { validateRevision } = require('./protocol');
 
 const NAMESPACE = 'obsidian-webdav-versions-v1';
 const HASH = /^[0-9a-f]{64}$/;
@@ -221,17 +229,28 @@ class DavRemote {
     this.auth = username || password ? 'Basic ' + base64(username + ':' + password) : '';
     this.revisions = new Map();
     this.verifiedBlobs = new Set();
+    this.objectInventory = null; // null means no complete directory inventory yet.
+    this.confirmedPuts = new Set();
+    this.uncertainPuts = new Set();
     this.created = false;
+    this.blobPreflights = new Map();
   }
 
-  async call(method, url, headers, body, limit) {
+  async hashOf(value) {
+    if (this.stats) this.stats.hashBytes += bytes(value).length;
+    return sha256(value);
+  }
+
+  async call(method, url, headers, body, limit, preflight) {
     if (url.origin !== this.base.origin) throw new Error('已阻止跨站 WebDAV 请求。');
     headers = { 'Accept-Encoding': 'identity', ...headers };
     if (this.auth) headers.Authorization = this.auth;
     if (body !== undefined) headers['Content-Length'] = String(body.length);
     let result;
     try {
-      result = await this.request({ method, url, headers, body, limit });
+      if (this.request.tracksStats) this.request.stats = this.stats;
+      else if (this.stats) this.stats.httpRequests++;
+      result = await this.request({ method, url, headers, body, limit, preflight });
     } catch (err) {
       // TLS and transport exceptions may contain user information or signed URLs.
       const mobileMessages = {
@@ -261,48 +280,113 @@ class DavRemote {
   }
   async ensureFolder() {
     if (this.created) return;
-    await this.probe();
-    if (await this.propfind(this.folder, 0, true) === null) {
-      const r = await this.call('MKCOL', this.folder, {}, undefined, REV_LIMIT);
-      if (![200, 201, 204, 405].includes(r.status)) throw httpError('MKCOL', r.status);
-      // 405 can mean "exists" OR "operation not supported".
-      await this.propfind(this.folder, 0);
-    }
-    this.created = true;
+    const creating = this.creating ||= (async () => {
+      await this.probe();
+      if (await this.propfind(this.folder, 0, true) === null) {
+        const r = await this.call('MKCOL', this.folder, {}, undefined, REV_LIMIT);
+        if (![200, 201, 204, 405].includes(r.status)) throw httpError('MKCOL', r.status);
+        // 405 can mean "exists" OR "operation not supported".
+        await this.propfind(this.folder, 0);
+      }
+      this.created = true;
+    })();
+    try { await creating; }
+    finally { if (this.creating === creating) this.creating = null; }
   }
   objectURL(id, suffix) {
     checkHash(id);
     return new URL(id + suffix, this.folder);
   }
-  async read(url, limit, missingOK = false) {
-    const r = await this.call('GET', url, {}, undefined, limit);
+  async read(url, limit, missingOK = false, preflight) {
+    const r = await this.call('GET', url, {}, undefined, limit, preflight);
     if (missingOK && r.status === 404) return null;
     if (r.status !== 200) throw httpError('GET', r.status);
     return r.body;
   }
+  rememberObjects(urls) {
+    this.objectInventory = new Set(urls);
+    // Reuse covers preupload and serial publication in this listing epoch only.
+    // Existing objects in a fresh listing must take the usual GET verification.
+    this.confirmedPuts.clear();
+  }
+  addressedObject(url) {
+    const match = /\/([a-f0-9]{64})\.(blob|json)$/.exec(url.pathname);
+    return !!match && this.objectURL(match[1], '.' + match[2]).href === url.href;
+  }
   async immutable(url, data, type, limit, verify) {
     await this.ensureFolder();
-    const previous = await this.read(url, limit, true);
-    if (previous !== null) { verify(previous); return; }
+    const addressed = this.addressedObject(url), key = url.href;
+    const confirm = () => {
+      if (!addressed) return;
+      this.confirmedPuts.add(key);
+      this.objectInventory?.add(key);
+      this.uncertainPuts.delete(key);
+    };
+    // A verified put can be reused until the next listing (B4 preupload).
+    // Marker files are not content-addressed and retain the original read path.
+    if (addressed && this.confirmedPuts.has(key)) return;
+    if (!addressed || this.objectInventory === null || this.objectInventory.has(key) || this.uncertainPuts.has(key)) {
+      const previous = await this.read(url, limit, true);
+      if (previous !== null) { await verify(previous); confirm(); return; }
+    }
+    // Lost responses leave uncertain outcomes: probe before retrying even if
+    // the last inventory preceded this attempt.
+    if (addressed) this.uncertainPuts.add(key);
     const r = await this.call('PUT', url, { 'If-None-Match': '*', 'Content-Type': type }, data, REV_LIMIT);
     if (![200, 201, 204, 412].includes(r.status)) throw httpError('PUT', r.status);
     // Even 412 can be another honest client writing the same hash. A weak DAV
     // can ignore the precondition. All honest writers use the same content ID.
-    verify(await this.read(url, limit));
+    await verify(await this.read(url, limit));
+    confirm();
   }
-  async getBlob(id) {
-    const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
-    if (digest(bytes) !== id) throw integrity();
-    this.verifiedBlobs.add(id);
-    return bytes;
+  clearBlobPreflights() { this.blobPreflights.clear(); }
+  async getBlobSize(id) {
+    const url = this.objectURL(id, '.blob');
+    try {
+      const head = await this.call('HEAD', url, {}, undefined, REV_LIMIT);
+      const headers = Object.fromEntries(Object.entries(head.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
+      const length = headers['content-length'];
+      const size = /^\d+$/.test(length || '') ? Number(length) : NaN;
+      if (head.status !== 200 || !Number.isSafeInteger(size) || size < 0) {
+        // Desktop previously needed only GET. Missing HEAD support keeps that
+        // compatibility, with the engine reserving the full per-file upper bound.
+        if (this.request.requiresBlobHead) throw new Error('手机同步需要服务器支持 HEAD 并返回 Content-Length；请检查 WebDAV 直连地址。');
+        return null;
+      }
+      const limit = Math.min(BLOB_LIMIT, this.request.blobLimit ?? BLOB_LIMIT);
+      if (size > limit) throw new Error(this.request.requiresBlobHead ? '手机单个文件或响应超过 128 MiB；已暂停同步。' : '单个附件超过 WebDAV 的 512 MiB 限制。');
+      const reservations = this.blobPreflights.get(id) || [];
+      reservations.push({ url: url.href, status: head.status, headers, size });
+      this.blobPreflights.set(id, reservations);
+      return size;
+    } catch (error) { this.clearBlobPreflights(); throw error; }
+  }
+  async getBlob(id, expectedSize) {
+    if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > BLOB_LIMIT)) {
+      throw new Error('Invalid blob size reservation');
+    }
+    const reservations = this.blobPreflights.get(id) || [];
+    // HEADs for a shared blob can finish out of order. Match the caller's own
+    // reservation, and consume only that entry; later batches keep their slots.
+    const index = expectedSize === undefined ? 0 : reservations.findIndex(entry => entry.size === expectedSize);
+    const preflight = index >= 0 ? reservations.splice(index, 1)[0] : undefined;
+    if (!reservations.length) this.blobPreflights.delete(id);
+    try {
+      const limit = expectedSize ?? preflight?.size ?? BLOB_LIMIT;
+      const bytes = await this.read(this.objectURL(id, '.blob'), limit, false, preflight);
+      if (preflight && bytes.byteLength !== preflight.size) throw new Error('WebDAV 附件大小与预检不符；已停止同步。');
+      if (await this.hashOf(bytes) !== id) throw integrity();
+      this.verifiedBlobs.add(id);
+      return bytes;
+    } catch (error) { this.clearBlobPreflights(); throw error; }
   }
   async putBlob(id, data) {
     checkHash(id);
     const dataBytes = bytes(data);
     if (dataBytes.length > BLOB_LIMIT) throw new Error('单个附件超过 WebDAV 的 512 MiB 限制。');
-    if (digest(dataBytes) !== id) throw integrity();
-    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, got => {
-      if (digest(got) !== id) throw integrity();
+    if (await this.hashOf(dataBytes) !== id) throw integrity();
+    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, async got => {
+      if (await this.hashOf(got) !== id) throw integrity();
     });
     this.verifiedBlobs.add(id);
   }
@@ -318,10 +402,12 @@ class DavRemote {
     this.revisions.set(snapshot.id, snapshot);
   }
   async listRevisions() {
+    this.clearBlobPreflights();
     const listing = await this.propfind(this.folder, 1, true);
     if (listing === null) {
       if (this.revisions.size || this.created) throw new Error('远端版本目录消失；已停止同步。');
       await this.probe(); // do not mistake an incorrect URL/inaccessible parent for an empty store
+      this.rememberObjects([]);
       return [];
     }
     this.created = true;
@@ -332,6 +418,7 @@ class DavRemote {
       if (collection || !match) throw new Error('专用 WebDAV 版本目录内存在未知条目；已停止同步。');
       if (match[2] === 'json') ids.push(match[1]);
     }
+    this.rememberObjects([...listing.keys()].map(name => new URL(name, this.folder).href));
     for (const id of this.revisions.keys()) {
       if (!listing.has(id + '.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
     }
@@ -349,7 +436,7 @@ class DavRemote {
     for (const rev of revisions) {
       if (rev.blob !== null && !listing.has(rev.blob + '.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
     }
-    return structuredClone(revisions);
+    return revisions;
   }
 }
 
@@ -359,15 +446,17 @@ module.exports = { DavRemote, NAMESPACE, checkedRevision };
 "engine":function(module,exports,require){
 'use strict';
 
-const { digest, headsFor, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
+const { indexRevisions, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
-const { base64, fromBase64 } = require('./bytes');
+const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
+const { parallel } = require('./sharded');
 
-const hashOf = bytes => bytes === null ? null : digest(bytes);
+const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
 const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, deferred: 0,
-  conflictPaths: [], deferredPaths: [] });
+  conflictPaths: [], deferredPaths: [],
+  stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
 
 // Conflict names are valid physical paths, but are never valid logical note names.
 function checkPhysical(path) {
@@ -383,7 +472,8 @@ function checkSize(data, physical) {
 
 function snapshot(revisions) {
   const rows = [...revisions.values()];
-  const view = project(rows); // Also validates parent links and filename collisions.
+  const index = indexRevisions(rows);
+  const view = project(rows, index); // Also validates parent links and filename collisions.
   const byPath = new Map();
   for (const r of rows) {
     if (!byPath.has(r.path)) byPath.set(r.path, []);
@@ -392,7 +482,7 @@ function snapshot(revisions) {
   const tips = new Map();
   const versions = new Map();
   for (const [path, history] of byPath) {
-    const ids = headsFor(history, path);
+    const ids = [...index.leaves.get(path)].sort();
     tips.set(path, ids);
     const grouped = new Map();
     for (const id of ids) {
@@ -410,7 +500,9 @@ function snapshot(revisions) {
 }
 
 class SyncEngine {
-  constructor({ remote, local, state, device }) {
+  constructor({ remote, local, state, device, concurrency = 4 }) {
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Transfer concurrency must be between 1 and 4');
+    this.concurrency = concurrency;
     this.remote = remote;
     this.local = local;
     this.state = state;
@@ -418,7 +510,7 @@ class SyncEngine {
     this.queue = Promise.resolve();
   }
 
-  sync() { return this._enqueue(() => this._run()); }
+  sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
   resolve(physicalPath) { return this._enqueue(() => this._run(physicalPath)); }
 
   _enqueue(run) {
@@ -427,9 +519,117 @@ class SyncEngine {
     return result;
   }
 
+  _snapshot(s) {
+    return { version: 1, known: [...s.known], files: [...s.files],
+      reviewed: [...s.reviewed], absent: [...s.absent], pending: s.splitJournal ? null : s.pending,
+      ...(s.receiptSupported ? { receiptSequence: s.receiptSequence } : {}) };
+  }
+
   async _save(s) {
-    await this.state.save({ version: 1, known: [...s.known], files: [...s.files],
-      reviewed: [...s.reviewed], absent: [...s.absent], pending: s.pending });
+    // Serialization happens only at a checkpoint, never for each split journal.
+    // Legacy/test state implementations retain their original per-operation save.
+    if (!s.splitJournal || s.changed) {
+      const snapshot = this._snapshot(s);
+      const serialized = JSON.stringify(snapshot);
+      if (!s.splitJournal || serialized !== s.savedSnapshot) {
+        await this.state.save(snapshot);
+        s.savedSnapshot = serialized;
+      }
+      s.changed = false;
+    }
+    // The watermark is durable before cleanup starts. A crash during cleanup
+    // leaves only stale receipts, which loadReceipts skips on the next start.
+    if (s.receiptSupported && s.receiptsNeedCleanup) {
+      await this.state.clearReceipts(s.receiptSequence);
+      s.receiptsNeedCleanup = false;
+    }
+    s.sinceCheckpoint = 0;
+    s.checkpointAt = Date.now();
+  }
+
+  async _beginPending(s) {
+    if (s.splitJournal && s.receiptSupported) s.pending.operationId = randomUUID();
+    if (s.splitJournal) await this.state.savePending(s.pending);
+    else await this._save(s);
+  }
+
+  async _finishPending(s) {
+    const pending = s.pending;
+    s.pending = null;
+    if (s.splitJournal) {
+      // A storage adapter implementing only the optional pending API cannot
+      // discard that journal before the new binding has its own durable record.
+      if (!s.receiptSupported || !pending.operationId) await this._save(s);
+      await this.state.clearPending();
+    } else await this._save(s);
+  }
+
+  _validateReceipt(s, entry) {
+    if (!entry || !['push', 'apply'].includes(entry.kind) || typeof entry.operationId !== 'string' || !entry.operationId ||
+        !Array.isArray(entry.known) || !entry.known.length) throw new Error('Invalid completion receipt');
+    checkPhysical(entry.physical);
+    for (const id of entry.known) if (!s.revs.has(id)) throw new Error('Completion receipt references missing remote revision: ' + id);
+    const next = entry.next;
+    if (next !== null) {
+      if (!next || typeof next !== 'object') throw new Error('Invalid completion receipt binding');
+      safePath(next.path);
+      if (!Array.isArray(next.parents) || !next.parents.length || !next.parents.every(id => {
+        const r = s.revs.get(id); return r && r.path === next.path && r.blob === next.blob;
+      })) throw new Error('Completion receipt binding does not match remote revisions');
+    }
+    if (entry.absent !== null) {
+      const absent = entry.absent;
+      if (!absent || typeof absent !== 'object') throw new Error('Invalid completion receipt deletion');
+      safePath(absent.path);
+      if (entry.physical !== absent.path || next !== null || !Array.isArray(absent.parents) || !absent.parents.length || !absent.parents.every(id => {
+        const r = s.revs.get(id); return r && r.path === absent.path && r.blob === null;
+      })) throw new Error('Completion receipt deletion does not match remote revisions');
+    }
+  }
+
+  _applyReceipt(s, entry) {
+    this._validateReceipt(s, entry);
+    this._bind(s, entry.physical, entry.next);
+    if (entry.absent) this._setAbsent(s, entry.absent.path, entry.absent.parents);
+    else if (entry.next && entry.physical === entry.next.path) this._setAbsent(s, entry.next.path, null);
+    for (const id of entry.known) {
+      if (!s.known.has(id)) { s.known.add(id); s.changed = true; }
+    }
+  }
+
+  async _replayReceipts(s) {
+    if (!s.receiptSupported) return;
+    const receipts = await this.state.loadReceipts(s.receiptSequence);
+    if (s.legacyPending && receipts.length) throw new Error('Legacy pending and completion receipts overlap; retain local-state and stop');
+    for (const { sequence, entry } of receipts) {
+      if (!Number.isSafeInteger(sequence) || sequence !== s.receiptSequence + 1 || s.completedOperations.has(entry?.operationId)) {
+        throw new Error('Invalid completion receipt ordering');
+      }
+      this._applyReceipt(s, entry);
+      s.completedOperations.add(entry.operationId);
+      s.receiptSequence = sequence;
+      s.changed = true;
+    }
+    s.receiptsNeedCleanup = true;
+  }
+
+  async _completeOperation(s, next, absent, known) {
+    if (!s.splitJournal || !s.receiptSupported || !s.pending.operationId) return;
+    const entry = { operationId: s.pending.operationId, kind: s.pending.kind, physical: s.pending.physical,
+      next, absent, known };
+    this._validateReceipt(s, entry);
+    const sequence = await this.state.saveReceipt(entry);
+    if (sequence !== s.receiptSequence + 1) throw new Error('Unexpected completion receipt sequence');
+    s.receiptSequence = sequence;
+    s.completedOperations.add(entry.operationId);
+    s.changed = true;
+    s.receiptsNeedCleanup = true;
+  }
+
+  async _checkpointProgress(s) {
+    if (!s.splitJournal) return;
+    s.sinceCheckpoint++;
+    if (s.sinceCheckpoint >= 200 || Date.now() - s.checkpointAt >= 5000) await this._save(s);
   }
 
   async _open() {
@@ -438,8 +638,19 @@ class SyncEngine {
         !Array.isArray(disk.files) || !Array.isArray(disk.reviewed))) {
       throw new Error('Invalid sync state; the vault has not been changed');
     }
+    const splitSupported = ['loadPending', 'savePending', 'clearPending'].every(name => typeof this.state[name] === 'function');
+    const receiptSupported = splitSupported && ['loadReceipts', 'saveReceipt', 'clearReceipts'].every(name => typeof this.state[name] === 'function');
+    const receiptSequence = disk?.receiptSequence ?? 0;
+    if (!Number.isSafeInteger(receiptSequence) || receiptSequence < 0) throw new Error('Invalid completion receipt watermark');
+    const independent = splitSupported ? await this.state.loadPending() : null;
+    const embedded = disk?.pending ?? null;
+    if (embedded && independent) throw new Error('Both legacy and independent sync journals are present; retain local-state and stop');
     const s = { known: new Set(disk?.known), files: new Map(disk?.files),
-      reviewed: new Map(disk?.reviewed), absent: new Map(disk?.absent), pending: disk?.pending ?? null, revs: new Map() };
+      reviewed: new Map(disk?.reviewed), absent: new Map(disk?.absent), pending: embedded || independent,
+      revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
+      changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
+      receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false };
+    s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
       s.revs.set(r.id, r);
@@ -463,19 +674,73 @@ class SyncEngine {
         return r && r.path === path && r.blob === null;
       })) throw new Error('Invalid deletion baseline for ' + path);
     }
+    // Restore completed local ancestry before recording newly discovered remote
+    // history or advancing the checkpoint watermark.
+    await this._replayReceipts(s);
     const discovered = s.revs.size !== s.known.size;
     s.known = new Set(s.revs.keys());
-    if (discovered) await this._save(s);
+    if (discovered) { s.changed = true; await this._save(s); }
     return s;
   }
 
   _bind(s, physical, binding) {
-    if (binding) s.files.set(physical, binding);
-    else s.files.delete(physical);
+    const previous = s.files.get(physical);
+    if (binding) {
+      if (previous && previous.path === binding.path && previous.blob === binding.blob && sameIds(previous.parents, binding.parents)) return false;
+      s.files.set(physical, binding);
+    } else if (!s.files.delete(physical)) return false;
+    s.changed = true;
+    return true;
+  }
+
+  _setAbsent(s, path, ids) {
+    if (ids) {
+      if (sameIds(s.absent.get(path) || [], ids)) return;
+      s.absent.set(path, ids);
+    } else if (!s.absent.delete(path)) return;
+    s.changed = true;
+  }
+
+  _rebindDescendant(s, before, physical, base, hash) {
+    // A completed operation can outlive the last checkpoint after its separate
+    // journal was cleared. Recover only a leaf acknowledging every old parent;
+    // matching bytes on an unrelated branch must remain concurrent work.
+    for (const id of before.tips.get(base.path) || []) {
+      const leaf = s.revs.get(id);
+      if (leaf.blob !== hash) continue;
+      const needed = new Set(base.parents), visited = new Set(), pending = [id];
+      while (pending.length && needed.size) {
+        const next = pending.pop();
+        if (visited.has(next)) continue;
+        visited.add(next); needed.delete(next);
+        pending.push(...s.revs.get(next).parents);
+      }
+      if (needed.size) continue;
+      this._bind(s, physical, hash === null ? null : { path: base.path, blob: hash, parents: [id] });
+      if (hash === null && physical === base.path) this._setAbsent(s, physical, [id]);
+      return true;
+    }
+    return false;
+  }
+
+  async _hash(value) {
+    if (value !== null) this.stats.hashBytes += typeof value === 'string' ? new TextEncoder().encode(value).length : value.byteLength;
+    return hashOf(value);
+  }
+
+  async _read(physical, limit) {
+    const data = await this.local.read(physical, limit);
+    if (data !== null && !this.local.tracksStats) this.stats.vaultReads++;
+    return data;
   }
 
   async _localHash(physical) {
-    return this.local.hash ? this.local.hash(physical) : hashOf(await this.local.read(physical));
+    return this.local.hash ? this.local.hash(physical) : this._hash(await this._read(physical));
+  }
+
+  async _observedHash(physical) {
+    if (!this.observed.has(physical)) this.observed.set(physical, await this._localHash(physical));
+    return this.observed.get(physical);
   }
 
   async _ackPush(s, result) {
@@ -486,27 +751,30 @@ class SyncEngine {
       if (!staged && typeof bytes !== 'string') throw new Error('Missing staged content for ' + physical);
       const data = staged ? await this.state.readStaged(rev.blob) : fromBase64(bytes);
       if (!data || data.byteLength > MAX_BYTES) throw new Error('Missing or oversized staged content for ' + physical);
-      if (digest(data) !== rev.blob) throw new Error('Staged content checksum mismatch: ' + physical);
+      if (await this._hash(data) !== rev.blob) throw new Error('Staged content checksum mismatch: ' + physical);
       await this.remote.putBlob(rev.blob, data);
     }
     // A retry always publishes the exact same document and identifier.
     await this.remote.putRevision(rev);
     s.revs.set(rev.id, rev);
-    s.known.add(rev.id);
+    if (!s.known.has(rev.id)) { s.known.add(rev.id); s.changed = true; }
     this._bind(s, physical, rev.blob === null ? null : { path: rev.path, blob: rev.blob, parents: [rev.id] });
-    if (physical === rev.path && rev.blob === null) s.absent.set(physical, [rev.id]);
-    s.pending = null;
-    await this._save(s);
+    const absent = physical === rev.path && rev.blob === null ? { path: physical, parents: [rev.id] } : null;
+    if (absent) this._setAbsent(s, physical, absent.parents);
+    await this._completeOperation(s, rev.blob === null ? null : { path: rev.path, blob: rev.blob, parents: [rev.id] }, absent, [rev.id]);
+    await this._finishPending(s);
     if (staged) await this.state.clearStaged(rev.blob);
+    this.local.invalidate?.(physical); // Refresh the persistent hint from the saved file at flush.
     result.uploaded++;
+    await this._checkpointProgress(s);
   }
 
   async _push(s, physical, path, parents, data, result) {
     checkSize(data, physical);
-    const rev = makeRevision({ path, parents, blob: hashOf(data), device: this.device });
+    const rev = makeRevision({ path, parents, blob: await this._hash(data), device: this.device });
     // Check that a new conflict, including its generated filename, is representable before publication.
     project([...s.revs.values()].filter(r => r.path === path).concat(rev));
-    s.reviewed.delete(path);
+    if (s.reviewed.delete(path)) s.changed = true;
     s.pending = { kind: 'push', physical, rev };
     if (data !== null && this.state.stageBlob && this.state.readStaged && this.state.clearStaged) {
       // Write bytes first. Once the journal is durable, retry needs neither the open editor nor its file.
@@ -515,12 +783,22 @@ class SyncEngine {
     } else if (data !== null) {
       s.pending.bytes = base64(data);
     }
-    await this._save(s);
+    await this._beginPending(s);
     await this._ackPush(s, result);
+    this.observed.set(physical, rev.blob);
   }
 
   async _recover(s, result) {
     if (!s.pending) return;
+    if (s.pending.operationId && s.completedOperations.has(s.pending.operationId)) {
+      // Completion already has an exact durable baseline. Do not reinterpret an
+      // editor change after that completion through the older pending intent.
+      const { kind, staged, rev, physical } = s.pending;
+      await this._finishPending(s);
+      if (kind === 'push' && staged) await this.state.clearStaged(rev.blob);
+      this.local.invalidate?.(physical);
+      return;
+    }
     if (s.pending.kind === 'push') return this._ackPush(s, result);
     if (s.pending.kind !== 'apply') throw new Error('Unknown sync journal entry');
     const { physical, next } = s.pending;
@@ -528,9 +806,14 @@ class SyncEngine {
     const actual = await this._localHash(physical);
     // The local CAS may have completed immediately before the crash. A subsequent user edit
     // does not match the staged result; keep its earlier baseline for conservative capture.
-    if (actual === (next?.blob ?? null)) this._bind(s, physical, next);
-    s.pending = null;
-    await this._save(s);
+    if (actual === (next?.blob ?? null)) {
+      this._bind(s, physical, next);
+      const absent = s.pending.absent || null;
+      if (absent) this._setAbsent(s, absent.path, absent.parents);
+      await this._completeOperation(s, next, absent, s.pending.known || next?.parents || []);
+    }
+    await this._finishPending(s);
+    await this._checkpointProgress(s);
   }
 
   async _resolve(s, selected, before, result) {
@@ -544,47 +827,102 @@ class SyncEngine {
     if (before.versions.get(path)?.size < 2) throw new Error('No unresolved conflict for ' + path);
     for (const [physical, v] of before.files) {
       if (v.path !== path || physical === selected) continue;
-      if (hashOf(await this.local.read(physical)) !== v.blob) {
+      if (await this._hash(await this._read(physical)) !== v.blob) {
         throw new Error('Another conflict copy was edited or removed; sync and review it first: ' + physical);
       }
     }
-    const data = await this.local.read(selected);
+    const data = await this._read(selected);
     if (data === null) throw new Error('Selected conflict file is missing: ' + selected);
     await this._push(s, selected, path, tips, data, result);
   }
 
+  * _batches(items) {
+    const budget = this.local.transferBudget || 128 * 1024 * 1024;
+    let batch = [], total = 0;
+    for (const item of items) {
+      if (batch.length && (batch.length >= this.concurrency || total + item.size > budget)) {
+        yield batch; batch = []; total = 0;
+      }
+      batch.push(item); total += item.size;
+      // A single oversized or unknown-size body reserves the whole channel.
+      if (item.size > budget) { yield batch; batch = []; total = 0; }
+    }
+    if (batch.length) yield batch;
+  }
+
   async _capture(s, before, result, deferred) {
-    const listed = await this.local.list();
-    const paths = new Set([...listed, ...s.files.keys()]);
-    // Detect file/folder, case and Unicode collisions before publishing new filenames.
+    const listed = this.full ? await this.local.list() : [...this.dirty];
+    const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
+    const sizes = new Map();
+    const sizeOf = async name => {
+      if (!sizes.has(name)) sizes.set(name, this.local.size ? await this.local.size(name) : undefined);
+      const size = sizes.get(name);
+      if (size !== undefined && size !== null && (!Number.isSafeInteger(size) || size < 0 || size > MAX_BYTES)) throw new Error('Invalid or oversized local file: ' + name);
+      return size;
+    };
+    // Validate all potential new names before publishing. Keep metadata only;
+    // incremental batches of new files must not turn into a whole-vault readAhead.
     const provisional = [];
     for (const name of listed) {
       checkPhysical(name);
       if (!isConflictPath(name) && !before.files.has(name)) {
+        if (!this.full) {
+          const size = await sizeOf(name);
+          if (size === null) continue;
+          if (size === undefined) {
+            const value = await this._read(name); checkSize(value, name);
+            if (value === null) continue;
+          }
+        }
         provisional.push(makeRevision({ path: name, parents: [], blob: '0'.repeat(64), device: this.device }));
       }
     }
     if (provisional.length) project([...s.revs.values(), ...provisional]);
+    const candidates = [];
     for (const physical of paths) {
       const base = s.files.get(physical);
-      if (base && this.local.hash && await this._localHash(physical) === base.blob) continue;
-      const data = await this.local.read(physical);
-      checkSize(data, physical);
-      const hash = hashOf(data);
-      if (base) {
-        if (hash !== base.blob) await this._push(s, physical, base.path, base.parents, data, result);
-        continue;
-      }
-      if (data === null) continue;
-      const remote = before.files.get(physical);
-      if (remote && hash === remote.blob) {
-        this._bind(s, physical, remote); // Fresh device with identical content.
-      } else if (isConflictPath(physical)) {
-        // A generated copy without a recorded owner cannot safely become a new logical note.
-        deferred.add(physical);
-      } else {
-        // Independent roots preserve different pre-existing files on the first sync.
-        await this._push(s, physical, physical, s.absent.get(physical) || [], data, result);
+      if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
+      const size = await sizeOf(physical);
+      candidates.push({ physical, base, size: size === undefined ? MAX_BYTES : size === null ? 0 : size });
+    }
+    for (const batch of this._batches(candidates)) {
+      try {
+        await parallel(batch, async row => {
+          this.local.checkActive?.();
+          row.data = await this._read(row.physical, row.size); checkSize(row.data, row.physical);
+          if (row.data !== null && row.data.byteLength > row.size) throw new Error('Local file grew beyond reserved size: ' + row.physical);
+          row.hash = await this._hash(row.data);
+          this.observed.set(row.physical, row.hash);
+        }, this.concurrency);
+        const pushes = [];
+        for (const row of batch) {
+          const { physical, base, hash, data } = row;
+          if (base) {
+            if (hash !== base.blob) {
+              if (s.splitJournal && this._rebindDescendant(s, before, physical, base, hash)) await this._checkpointProgress(s);
+              else pushes.push({ ...row, path: base.path, parents: base.parents });
+            }
+          } else if (data !== null) {
+            const remote = before.files.get(physical);
+            if (remote && hash === remote.blob) {
+              if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
+            } else if (isConflictPath(physical)) deferred.add(physical);
+            else pushes.push({ ...row, path: physical, parents: s.absent.get(physical) || [] });
+          }
+        }
+        // Content-addressed blobs are safe to pre-upload. Revision publication,
+        // journals and acknowledgements below remain strictly serial.
+        await parallel(pushes.filter(row => row.data !== null), async row => {
+          this.local.checkActive?.();
+          await this.remote.putBlob(row.hash, row.data);
+        }, this.concurrency);
+        for (const row of pushes) {
+          this.local.checkActive?.();
+          await this._push(s, row.physical, row.path, row.parents, row.data, result);
+          row.data = null;
+        }
+      } finally {
+        for (const row of batch) row.data = null;
       }
     }
     await this._save(s);
@@ -592,75 +930,141 @@ class SyncEngine {
 
   async _apply(s, nextView, result, deferred) {
     const paths = new Set([...nextView.files.keys(), ...s.files.keys()]);
+    const plans = [];
     for (const physical of paths) {
       if (deferred.has(physical)) continue;
       const old = s.files.get(physical);
       const next = nextView.files.get(physical) || null;
       const expected = old?.blob ?? null;
       const wanted = next?.blob ?? null;
-      const actual = await this._localHash(physical);
+      // No local observation means no new ancestry acknowledgement either.
+      if (!this.full && !this.dirty.has(physical) && expected === wanted) continue;
+      const actual = await this._observedHash(physical);
       if (actual === wanted) {
-        this._bind(s, physical, next);
+        if (this._bind(s, physical, next)) await this._checkpointProgress(s);
         continue;
       }
-      if (actual !== expected) {
-        deferred.add(physical);
-        continue;
-      }
-      const data = next ? await this.remote.getBlob(wanted) : null;
-      if (hashOf(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
-      s.pending = { kind: 'apply', physical, next };
-      await this._save(s);
-      const applied = await this.local.compareAndSet(physical, expected, data);
-      if (applied) {
-        this._bind(s, physical, next);
-        if (next) result.downloaded++;
-        else result.deleted++;
-      } else {
-        deferred.add(physical); // The editor changed it after the scan. Capture on next sync.
-      }
-      s.pending = null;
-      await this._save(s);
+      if (actual !== expected) { deferred.add(physical); continue; }
+      const deletionIds = old && physical === old.path && nextView.versions.get(old.path)?.size === 1
+        ? nextView.versions.get(old.path).get(null) : null;
+      const absent = !next && deletionIds ? { path: old.path, parents: deletionIds } : null;
+      const known = next?.parents || nextView.tips.get(old?.path) || [];
+      plans.push({ physical, next, expected, wanted, absent, known, size: 0 });
     }
+    // HEADs transfer metadata only, in the same bounded pool. The remote passes
+    // each preflight to the subsequent GET instead of issuing another HEAD.
+    await parallel(plans.filter(row => row.next), async row => {
+      this.local.checkActive?.();
+      const size = this.remote.getBlobSize ? await this.remote.getBlobSize(row.wanted) : null;
+      if (size !== null && (!Number.isSafeInteger(size) || size < 0 || size > MAX_BYTES)) throw new Error('Invalid remote blob size');
+      row.size = size === null ? MAX_BYTES : size;
+    }, this.concurrency);
+    for (const batch of this._batches(plans)) {
+      try {
+        await parallel(batch, async row => {
+          this.local.checkActive?.();
+          row.data = row.next ? await this.remote.getBlob(row.wanted, row.size) : null;
+          if (row.data !== null && row.data.byteLength > row.size) throw new Error('Downloaded content exceeds reserved size: ' + row.physical);
+          if (await this._hash(row.data) !== row.wanted) throw new Error('Downloaded content checksum mismatch for ' + row.physical);
+        }, this.concurrency);
+        // All completed payloads stay charged to this batch until CAS and journal
+        // acknowledgement finish. No next batch starts while these bytes are held.
+        for (const row of batch) {
+          const { physical, next, expected, wanted, absent, known, data } = row;
+          this.local.checkActive?.();
+          s.pending = { kind: 'apply', physical, next,
+            ...(s.splitJournal && s.receiptSupported ? { absent, known } : {}) };
+          await this._beginPending(s);
+          const applied = await this.local.compareAndSet(physical, expected, data);
+          if (applied) {
+            this.observed.set(physical, wanted);
+            this._bind(s, physical, next);
+            if (absent) this._setAbsent(s, absent.path, absent.parents);
+            await this._completeOperation(s, next, absent, known);
+            if (next) result.downloaded++;
+            else result.deleted++;
+          } else {
+            this.observed.delete(physical);
+            deferred.add(physical); // An editor change after the scan must survive.
+          }
+          await this._finishPending(s);
+          await this._checkpointProgress(s);
+          row.data = null;
+        }
+      } finally {
+        for (const row of batch) row.data = null;
+      }
+    }
+    await this._save(s);
   }
 
-  async _run(selected) {
+  async _run(selected, options = {}) {
+    try { return await this._runOnce(selected, options); }
+    finally { this.remote.clearBlobPreflights?.(); }
+  }
+
+  async _runOnce(selected, options = {}) {
     const result = counts();
+    const started = Date.now();
+    this.stats = result.stats;
+    this.observed = new Map();
+    this.full = selected !== undefined || options.full !== false || options.deep === true;
+    this.dirty = new Set(options.dirty || []);
+    result.stats.full = Number(this.full);
+    this.local.stats = this.state.stats = result.stats;
+    if (this.remote.setStats) this.remote.setStats(result.stats);
+    else {
+      this.remote.stats = result.stats;
+      if (this.remote.request) this.remote.request.stats = result.stats;
+    }
+    await this.local.beginRound?.({ deep: options.deep === true });
     await this.local.recover?.();
     const s = await this._open();
     await this._recover(s, result);
+    // Finish an old embedded intent through its original durable snapshot path
+    // before subsequent operations start using the independent pending file.
+    if (s.legacyPending) { s.legacyPending = false; s.splitJournal = true; }
     const before = snapshot(s.revs);
     if (selected !== undefined) {
       await this._resolve(s, selected, before, result);
     }
     const deferred = new Set();
-    await this._capture(s, selected === undefined ? before : snapshot(s.revs), result, deferred);
-    const after = snapshot(s.revs);
+    const captureView = selected === undefined ? before : snapshot(s.revs);
+    const capturedRevisionCount = s.revs.size;
+    await this._capture(s, captureView, result, deferred);
+    const after = s.revs.size === capturedRevisionCount ? captureView : snapshot(s.revs);
     await this._apply(s, after, result, deferred);
-    s.reviewed.clear();
+    const reviewed = new Map();
     for (const [path, versions] of after.versions) {
       if (!deferred.has(path)) {
         if (versions.size === 1 && versions.has(null)) {
           // A later local recreation acknowledges only deletions already observed here.
-          if (await this._localHash(path) === null) s.absent.set(path, versions.get(null));
+          const ids = versions.get(null);
+          if (!this.full && !this.dirty.has(path) && sameIds(s.absent.get(path) || [], ids)) continue;
+          if (await this._observedHash(path) === null) this._setAbsent(s, path, ids);
         } else if (s.files.has(path)) {
-          s.absent.delete(path);
+          this._setAbsent(s, path, null);
         }
       }
       if (versions.size > 1) {
         result.conflictPaths.push(path);
-        s.reviewed.set(path, after.tips.get(path));
+        reviewed.set(path, after.tips.get(path));
       }
     }
     for (const physical of deferred) {
       const path = after.files.get(physical)?.path ?? s.files.get(physical)?.path ?? physical;
-      s.reviewed.delete(path);
+      reviewed.delete(path);
+    }
+    if (s.reviewed.size !== reviewed.size || [...reviewed].some(([path, ids]) => !sameIds(s.reviewed.get(path) || [], ids))) {
+      s.reviewed = reviewed; s.changed = true;
     }
     result.conflictPaths.sort();
     result.conflicts = result.conflictPaths.length;
     result.deferredPaths = [...deferred].sort();
     result.deferred = result.deferredPaths.length;
     await this._save(s);
+    await this.local.flush?.();
+    result.stats.durationMs = Date.now() - started;
     return result;
   }
 }
@@ -675,7 +1079,10 @@ const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 
-const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const hash = (bytes, stats) => {
+  if (stats) stats.hashBytes += typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.byteLength;
+  return createHash('sha256').update(bytes).digest('hex');
+};
 
 function validateRelative(name) {
   if (typeof name !== 'string' || name.includes('\\') || /^[A-Za-z]:/.test(name) || /[\u0000-\u001f]/.test(name) ||
@@ -720,9 +1127,21 @@ function readBytes(file, limit = Infinity) {
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error('目标不是普通文件：' + path.basename(file));
-    if (stat.size > limit) throw new Error('文件超过 512 MiB：' + path.basename(file));
-    return fs.readFileSync(fd);
+    if (stat.size > limit) throw new Error((limit < 512 * 1024 * 1024 ? '文件大小在同步期间变化；请重试：' : '文件超过 512 MiB：') + path.basename(file));
+    const data = fs.readFileSync(fd);
+    if (data.byteLength > limit) throw new Error('文件大小在读取期间变化；请重试：' + path.basename(file));
+    return data;
   } finally { fs.closeSync(fd); }
+}
+
+
+function receiptSequence(name) {
+  const match = /^receipt-(\d{16})\.json$/.exec(name);
+  if (!match || !Number.isSafeInteger(Number(match[1])) || Number(match[1]) <= 0) throw new Error('完成日志文件名无效；已停止同步。');
+  return Number(match[1]);
+}
+function checkReceiptWatermark(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('完成日志检查点水位无效；已停止同步。');
 }
 
 class DiskState {
@@ -730,6 +1149,10 @@ class DiskState {
     // Bind sync ancestry to both the collection and the account.
     const key = hash(JSON.stringify([new URL(url).href.replace(/\/+$/, ''), user]));
     this.file = path.join(directory, 'state-' + key + '.json');
+    this.pendingFile = path.join(directory, 'pending-' + key + '.json');
+    this.receiptDirectory = path.join(directory, 'completed-' + key);
+    this.receiptSequence = undefined;
+    this.receiptFloor = 0;
     this.staging = path.join(directory, 'outbox-' + key);
   }
   async load() {
@@ -737,19 +1160,100 @@ class DiskState {
     return data === null ? null : JSON.parse(data.toString('utf8'));
   }
   async save(value) { atomicWrite(this.file, JSON.stringify(value)); }
+  async loadPending() {
+    const data = readBytes(this.pendingFile);
+    if (data === null) return null;
+    try {
+      const row = JSON.parse(data.toString('utf8'));
+      if (row.version !== 1 || typeof row.payload !== 'string' || hash(row.payload, this.stats) !== row.hash) throw new Error('checksum');
+      const pending = JSON.parse(row.payload);
+      if (!pending || typeof pending !== 'object' || Array.isArray(pending)) throw new Error('payload');
+      return pending;
+    } catch { throw new Error('同步待处理日志损坏；已停止同步。'); }
+  }
+  async savePending(value) {
+    const previous = await this.loadPending();
+    const payload = JSON.stringify(value);
+    if (previous !== null) {
+      if (JSON.stringify(previous) !== payload) throw new Error('仍有未完成的同步日志；请先恢复。');
+      return;
+    }
+    atomicWrite(this.pendingFile, JSON.stringify({ version: 1, payload, hash: hash(payload, this.stats) }));
+  }
+  async clearPending() {
+    fs.rmSync(this.pendingFile, { force: true });
+    syncDir(path.dirname(this.pendingFile));
+  }
+  receiptFiles() {
+    if (!statMaybe(this.receiptDirectory)) return [];
+    safeDir(this.receiptDirectory);
+    const files = [];
+    for (const item of fs.readdirSync(this.receiptDirectory, { withFileTypes: true })) {
+      if (item.name.startsWith('.')) continue; // Interrupted atomicWrite temporary files are not committed.
+      if (!item.isFile()) throw new Error('完成日志不是普通文件；已停止同步。');
+      files.push({ file: path.join(this.receiptDirectory, item.name), sequence: receiptSequence(item.name) });
+    }
+    return files.sort((a,b) => a.sequence - b.sequence);
+  }
+  async loadReceipts(afterSequence = 0) {
+    checkReceiptWatermark(afterSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, afterSequence);
+    this.receiptSequence = undefined;
+    const files = this.receiptFiles(), entries = [];
+    let expected = afterSequence + 1;
+    for (const { file, sequence } of files) {
+      if (sequence <= afterSequence) continue;
+      if (sequence !== expected++) throw new Error('完成日志序号不连续；请保留现场。');
+      try {
+        const data = readBytes(file);
+        if (data === null) throw new Error('missing');
+        const row = JSON.parse(data.toString('utf8'));
+        if (row.version !== 1 || row.sequence !== sequence || typeof row.payload !== 'string' ||
+            hash(JSON.stringify([sequence, row.payload]), this.stats) !== row.hash) throw new Error('checksum');
+        const entry = JSON.parse(row.payload);
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('payload');
+        entries.push({ sequence, entry });
+      } catch { throw new Error('同步完成日志损坏或校验失败；已停止同步。'); }
+    }
+    this.receiptSequence = Math.max(this.receiptFloor, files.at(-1)?.sequence || 0);
+    return entries;
+  }
+  async saveReceipt(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('完成日志内容无效。');
+    const directoryExisted = statMaybe(this.receiptDirectory) !== null;
+    safeDir(this.receiptDirectory, true);
+    if (!directoryExisted) syncDir(path.dirname(this.receiptDirectory));
+    if (this.receiptSequence === undefined) await this.loadReceipts(this.receiptFloor);
+    const sequence = this.receiptSequence + 1;
+    checkReceiptWatermark(sequence);
+    const payload = JSON.stringify(entry);
+    const encoded = JSON.stringify({ version: 1, sequence, payload, hash: hash(JSON.stringify([sequence, payload]), this.stats) });
+    const target = path.join(this.receiptDirectory, 'receipt-' + String(sequence).padStart(16, '0') + '.json');
+    if (statMaybe(target)) throw new Error('完成日志序号已存在；请重新读取同步状态。');
+    try { atomicWrite(target, encoded); this.receiptSequence = sequence; return sequence; }
+    catch (error) { this.receiptSequence = undefined; throw error; }
+  }
+  async clearReceipts(throughSequence) {
+    checkReceiptWatermark(throughSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, throughSequence);
+    if (this.receiptSequence !== undefined) this.receiptSequence = Math.max(this.receiptSequence, throughSequence);
+    const files = this.receiptFiles();
+    for (const { file, sequence } of files) if (sequence <= throughSequence) fs.rmSync(file, { force: true });
+    if (files.length) syncDir(this.receiptDirectory);
+  }
   stagedPath(id) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('无效的待上传内容编号');
     return path.join(this.staging, id);
   }
   async stageBlob(id, bytes) {
     safeDir(this.staging, true);
-    if (hash(bytes) !== id) throw new Error('待上传内容校验失败');
+    if (hash(bytes, this.stats) !== id) throw new Error('待上传内容校验失败');
     atomicWrite(this.stagedPath(id), bytes);
   }
   async readStaged(id) {
     safeDir(this.staging);
     const bytes = readBytes(this.stagedPath(id));
-    if (bytes === null || hash(bytes) !== id) throw new Error('待上传内容缺失或损坏；已停止同步');
+    if (bytes === null || hash(bytes, this.stats) !== id) throw new Error('待上传内容缺失或损坏；已停止同步');
     return bytes;
   }
   async clearStaged(id) {
@@ -764,6 +1268,8 @@ class DiskVault {
     this.configDir = configDir;
     this.guard = guard;
     this.hashCache = new Map();
+    this.tracksStats = true;
+    this.transferBudget = 128 * 1024 * 1024;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
     }
@@ -808,7 +1314,22 @@ class DiskVault {
     return files;
   }
 
-  async read(name) { return readBytes(this.filePath(name), 512 * 1024 * 1024); }
+  readFile(file, limit) {
+    const data = readBytes(file, limit);
+    if (data !== null && this.stats && !file.startsWith(this.privateDir + path.sep)) this.stats.vaultReads++;
+    return data;
+  }
+  hashOf(value) { return hash(value, this.stats); }
+  async read(name, limit = 512 * 1024 * 1024) { return this.readFile(this.filePath(name), Math.min(512 * 1024 * 1024, limit)); }
+  async size(name) {
+    const stat = statMaybe(this.filePath(name));
+    if (!stat) return null;
+    if (!stat.isFile()) throw new Error('笔记不是普通文件：' + name);
+    if (stat.size > 512 * 1024 * 1024) throw new Error('文件超过 512 MiB：' + name);
+    return stat.size;
+  }
+
+  beginRound({ deep = false } = {}) { if (deep) this.hashCache.clear(); }
 
   async hash(name) {
     const file = this.filePath(name);
@@ -826,7 +1347,11 @@ class DiskVault {
     if (cached?.stamp === before) return cached.hash;
     const hasher = createHash('sha256');
     const stream = fs.createReadStream(file, { flags: fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW });
-    for await (const chunk of stream) hasher.update(chunk);
+    if (this.stats) this.stats.vaultReads++;
+    for await (const chunk of stream) {
+      if (this.stats) this.stats.hashBytes += chunk.byteLength;
+      hasher.update(chunk);
+    }
     if (before !== await stamp()) throw new Error('笔记正在变动，将在下一轮重试：' + name);
     const value = hasher.digest('hex');
     this.hashCache.set(name, { stamp: before, hash: value });
@@ -838,7 +1363,7 @@ class DiskVault {
   recover() {
     if (!statMaybe(this.transaction)) return;
     safeDir(this.transaction);
-    const metadata = readBytes(path.join(this.transaction, 'intent.json'));
+    const metadata = this.readFile(path.join(this.transaction, 'intent.json'));
     const old = path.join(this.transaction, 'previous');
     if (!metadata) {
       if (statMaybe(old)) throw new Error('本地恢复记录不完整：' + this.transaction);
@@ -847,14 +1372,14 @@ class DiskVault {
     }
     const tx = JSON.parse(metadata);
     const file = this.filePath(tx.name, true);
-    const previous = readBytes(old);
+    const previous = this.readFile(old);
     if (previous !== null) {
-      if (hash(previous) !== tx.expected) {
+      if (this.hashOf(previous) !== tx.expected) {
         if (!statMaybe(file)) fs.linkSync(old, file);
-        else if (hash(readBytes(file)) !== hash(previous)) throw new Error('检测到另一程序同时写入，原文保存在 ' + old);
+        else if (this.hashOf(this.readFile(file)) !== this.hashOf(previous)) throw new Error('检测到另一程序同时写入，原文保存在 ' + old);
       } else if (!statMaybe(file) && tx.next !== null) {
         const staged = path.join(this.transaction, 'next');
-        if (hash(readBytes(staged)) !== tx.next) throw new Error('本地暂存校验失败：' + staged);
+        if (this.hashOf(this.readFile(staged)) !== tx.next) throw new Error('本地暂存校验失败：' + staged);
         fs.linkSync(staged, file);
       }
     }
@@ -873,20 +1398,20 @@ class DiskVault {
   async compareAndSet(name, expected, next) {
     this.recover();
     const file = this.filePath(name, next !== null);
-    const before = readBytes(file, 512 * 1024 * 1024);
-    if ((before === null ? null : hash(before)) !== expected || !this.guard(name, before)) return false;
+    const before = this.readFile(file, 512 * 1024 * 1024);
+    if ((before === null ? null : this.hashOf(before)) !== expected || !this.guard(name, before)) return false;
     if ((next === null && before === null) || (next !== null && before !== null && next.equals(before))) return true;
     fs.mkdirSync(this.transaction, { mode: 0o700 });
     const old = path.join(this.transaction, 'previous');
     const staged = path.join(this.transaction, 'next');
     try {
       if (next !== null) atomicWrite(staged, next);
-      atomicWrite(path.join(this.transaction, 'intent.json'), JSON.stringify({ name, expected, next: next === null ? null : hash(next) }));
+      atomicWrite(path.join(this.transaction, 'intent.json'), JSON.stringify({ name, expected, next: next === null ? null : this.hashOf(next) }));
       syncDir(this.privateDir);
       if (before !== null) {
         try { fs.renameSync(file, old); }
         catch (err) { if (err.code === 'ENOENT') { this.finishTransaction(); return false; } throw err; }
-        if (hash(readBytes(old)) !== expected) { this.recover(); return false; }
+        if (this.hashOf(this.readFile(old)) !== expected) { this.recover(); return false; }
       }
       if (next !== null) {
         try { fs.linkSync(staged, file); }
@@ -1059,33 +1584,38 @@ module.exports={migrateStorage,rollbackStorage,verifyObject};
 },
 "mobile":function(module,exports,require){
 'use strict';
-const { bytes, text, arrayBuffer, digest, randomUUID } = require('./bytes');
+const { bytes, text, arrayBuffer, digest, sha256, randomUUID } = require('./bytes');
 
 // Native requestUrl buffers responses; keep mobile files below a conservative cap.
 const MOBILE_LIMIT = 128 * 1024 * 1024;
 const DOWNLOAD_CHUNK = 4 * 1024 * 1024;
-const hashOf = value => value === null ? null : digest(value);
 const mobileError = code => Object.assign(new Error(code), { code });
 
 function mobileRequest(requestUrl, active = () => true) {
-  return async ({ url, method, headers, body, limit }) => {
+  const send = args => {
+    if (request.stats) request.stats.httpRequests++;
+    return requestUrl(args);
+  };
+  const request = async ({ url, method, headers, body, limit, preflight }) => {
     if (!active()) throw mobileError('MOBILE_PAUSED');
     const nativeHeaders = { ...headers };
     delete nativeHeaders['Content-Length']; delete nativeHeaders['Accept-Encoding'];
+    let expectedLength = null;
     // requestUrl has no streaming reader. Check size before allocating a blob.
     if (method === 'GET' && url.pathname.endsWith('.blob')) {
-      const head = await requestUrl({ url: url.href, method: 'HEAD', headers: nativeHeaders, throw: false });
+      const head = preflight?.url === url.href ? preflight : await send({ url: url.href, method: 'HEAD', headers: nativeHeaders, throw: false });
       const h = Object.fromEntries(Object.entries(head.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
       if (head.status !== 404) {
         if (head.status !== 200 || !/^\d+$/.test(h['content-length'] || '')) throw mobileError('MOBILE_HEAD_REQUIRED');
         if (Number(h['content-length']) > Math.min(limit, MOBILE_LIMIT)) throw mobileError('MOBILE_TOO_LARGE');
         const size = Number(h['content-length']);
+        expectedLength = size;
         if (size > DOWNLOAD_CHUNK) {
           const assembled = new Uint8Array(size);
           for (let start = 0; start < size; start += DOWNLOAD_CHUNK) {
             if (!active()) throw mobileError('MOBILE_PAUSED');
             const end = Math.min(start + DOWNLOAD_CHUNK, size) - 1;
-            const part = await requestUrl({ url: url.href, method: 'GET',
+            const part = await send({ url: url.href, method: 'GET',
               headers: { ...nativeHeaders, Range: `bytes=${start}-${end}` }, throw: false });
             if (!active()) throw mobileError('MOBILE_PAUSED');
             const ph = Object.fromEntries(Object.entries(part.headers || {}).map(([k,v]) => [k.toLowerCase(),v]));
@@ -1104,35 +1634,47 @@ function mobileRequest(requestUrl, active = () => true) {
       }
       if (!active()) throw mobileError('MOBILE_PAUSED');
     }
-    const response = await requestUrl({ url: url.href, method, headers: nativeHeaders,
+    const response = await send({ url: url.href, method, headers: nativeHeaders,
       ...(body === undefined ? {} : { body: arrayBuffer(body) }), throw: false });
     if (!active()) throw mobileError('MOBILE_PAUSED');
-    if (!(response.arrayBuffer instanceof ArrayBuffer) || response.arrayBuffer.byteLength > Math.min(limit, MOBILE_LIMIT)) {
-      throw mobileError('MOBILE_TOO_LARGE');
-    }
+    if (!(response.arrayBuffer instanceof ArrayBuffer)) throw mobileError('MOBILE_TOO_LARGE');
+    if (response.status === 200 && expectedLength !== null && response.arrayBuffer.byteLength !== expectedLength) throw mobileError('MOBILE_RANGE_INVALID');
+    if (response.arrayBuffer.byteLength > Math.min(limit, MOBILE_LIMIT)) throw mobileError('MOBILE_TOO_LARGE');
     return { status: response.status, body: bytes(response.arrayBuffer),
       headers: Object.fromEntries(Object.entries(response.headers || {}).map(([k,v]) => [k.toLowerCase(),v])) };
   };
+  request.tracksStats = true;
+  request.requiresBlobHead = true;
+  request.blobLimit = MOBILE_LIMIT;
+  return request;
 }
 
 class AdapterIO {
-  constructor(adapter) { this.adapter = adapter; }
+  constructor(adapter) { this.adapter = adapter; this.confirmedDirectories = new Set(); }
+  async hashOf(value) {
+    if (value === null) return null;
+    if (this.stats) this.stats.hashBytes += bytes(value).length;
+    return sha256(value);
+  }
   async mkdir(dir) {
     let prefix = '';
     for (const part of dir.split('/')) {
       prefix = prefix ? prefix + '/' + part : part;
+      if (this.confirmedDirectories.has(prefix)) continue;
       const stat = await this.adapter.stat(prefix);
       if (!stat) await this.adapter.mkdir(prefix);
       else if (stat.type !== 'folder') throw new Error('同步工作目录被文件占用：' + prefix);
+      this.confirmedDirectories.add(prefix);
     }
   }
-  async read(path, limit = MOBILE_LIMIT) {
-    const stat = await this.adapter.stat(path);
+  async read(path, limit = MOBILE_LIMIT, knownStat) {
+    const stat = knownStat === undefined ? await this.adapter.stat(path) : knownStat;
     if (!stat) return null;
     if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + path);
-    if (stat.size > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
+    if (stat.size > limit) throw new Error((limit < MOBILE_LIMIT ? '文件大小在同步期间变化；请重试：' : '手机单个文件上限为 128 MiB：') + path);
     const value = bytes(await this.adapter.readBinary(path));
-    if (value.length > limit) throw new Error('手机单个文件上限为 128 MiB：' + path);
+    if (this.stats && this.privateDir && !path.startsWith(this.privateDir + '/')) this.stats.vaultReads++;
+    if (value.length > limit) throw new Error((limit < MOBILE_LIMIT ? '文件大小在同步期间变化；请重试：' : '手机单个文件上限为 128 MiB：') + path);
     return value;
   }
   // The destination must be absent. Adapter.copy is documented to fail on existing files.
@@ -1145,8 +1687,18 @@ class AdapterIO {
     const b = bytes(value);
     if (await this.adapter.exists(path)) throw new Error('暂存路径已经存在。');
     await this.adapter.writeBinary(path, arrayBuffer(b));
-    if (hashOf(await AdapterIO.prototype.read.call(this, path)) !== digest(b)) throw new Error('本地暂存写入校验失败。');
+    if (await this.hashOf(await AdapterIO.prototype.read.call(this, path)) !== await this.hashOf(b)) throw new Error('本地暂存写入校验失败。');
   }
+}
+
+
+function receiptSequence(name) {
+  const match = /^receipt-(\d{16})\.json$/.exec(name);
+  if (!match || !Number.isSafeInteger(Number(match[1])) || Number(match[1]) <= 0) throw new Error('完成日志文件名无效；已停止同步。');
+  return Number(match[1]);
+}
+function checkReceiptWatermark(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('完成日志检查点水位无效；已停止同步。');
 }
 
 // Two alternating, checksummed snapshots: a killed write cannot destroy the last
@@ -1155,6 +1707,10 @@ class MobileState extends AdapterIO {
   constructor(adapter, directory, url, user) {
     super(adapter);
     this.directory = directory + '/mobile-state-' + digest(JSON.stringify([new URL(url).href.replace(/\/+$/, ''), user]));
+    this.pendingFile = this.directory + '/pending.json';
+    this.latest = undefined;
+    this.receiptSequence = undefined;
+    this.receiptFloor = 0;
   }
   async snapshots() {
     const valid = []; let present = 0;
@@ -1164,7 +1720,7 @@ class MobileState extends AdapterIO {
       present++;
       try {
         const row = JSON.parse(text(b));
-        if (Number.isSafeInteger(row.sequence) && row.sequence > 0 && typeof row.payload === 'string' && digest(row.payload) === row.hash) {
+        if (Number.isSafeInteger(row.sequence) && row.sequence > 0 && typeof row.payload === 'string' && await this.hashOf(row.payload) === row.hash) {
           valid.push({ ...row, slot, state: JSON.parse(row.payload) });
         }
       } catch { /* Validation below stops on corruption of a committed slot. */ }
@@ -1172,31 +1728,131 @@ class MobileState extends AdapterIO {
     if (valid.length !== present) throw new Error('手机同步状态损坏；保留现场并停止同步。');
     return valid.sort((a,b) => b.sequence - a.sequence);
   }
-  async load() { return (await this.snapshots())[0]?.state ?? null; }
+  async load() {
+    const latest = (await this.snapshots())[0];
+    this.latest = latest ? { slot: latest.slot, sequence: latest.sequence } : null;
+    return latest?.state ?? null;
+  }
   async save(value) {
     await this.mkdir(this.directory);
-    const latest = (await this.snapshots())[0];
+    if (this.latest === undefined) await this.load();
+    const latest = this.latest;
     const slot = latest ? 1 - latest.slot : 0;
     const payload = JSON.stringify(value);
-    const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: digest(payload) });
+    const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: await this.hashOf(payload) });
     const target = this.directory + '/state-' + slot + '.json';
     const tmp = this.directory + '/writing-' + randomUUID();
+    try {
+      await this.writeFresh(tmp, encoded);
+      if (await this.adapter.exists(target)) await this.adapter.remove(target);
+      await this.adapter.rename(tmp, target);
+      this.latest = { slot, sequence: (latest?.sequence || 0) + 1 };
+    } catch (err) {
+      // A failed rename may have completed before its response was lost.
+      this.latest = undefined;
+      throw err;
+    }
+  }
+  async loadPending() {
+    const data = await this.read(this.pendingFile);
+    if (data === null) return null;
+    try {
+      const row = JSON.parse(text(data));
+      if (row.version !== 1 || typeof row.payload !== 'string' || await this.hashOf(row.payload) !== row.hash) throw new Error('checksum');
+      const pending = JSON.parse(row.payload);
+      if (!pending || typeof pending !== 'object' || Array.isArray(pending)) throw new Error('payload');
+      return pending;
+    } catch { throw new Error('手机同步待处理日志损坏；已停止同步。'); }
+  }
+  async savePending(value) {
+    await this.mkdir(this.directory);
+    const previous = await this.loadPending();
+    const payload = JSON.stringify(value);
+    if (previous !== null) {
+      if (JSON.stringify(previous) !== payload) throw new Error('仍有未完成的同步日志；请先恢复。');
+      return;
+    }
+    const encoded = JSON.stringify({ version: 1, payload, hash: await this.hashOf(payload) });
+    const tmp = this.directory + '/pending-writing-' + randomUUID();
     await this.writeFresh(tmp, encoded);
-    if (await this.adapter.exists(target)) await this.adapter.remove(target);
-    await this.adapter.rename(tmp, target);
-    if (text(await this.read(target)) !== encoded) throw new Error('手机同步状态写入校验失败。');
+    await this.adapter.rename(tmp, this.pendingFile);
+  }
+  async clearPending() {
+    if (await this.adapter.exists(this.pendingFile)) await this.adapter.remove(this.pendingFile);
+  }
+  async receiptFiles() {
+    const stat = await this.adapter.stat(this.directory);
+    if (!stat) return [];
+    if (stat.type !== 'folder') throw new Error('同步工作目录被文件占用：' + this.directory);
+    const listing = await this.adapter.list(this.directory), files = [];
+    for (const file of [...listing.files, ...listing.folders]) {
+      if (!file.startsWith(this.directory + '/') || file.slice(this.directory.length + 1).includes('/')) throw new Error('完成日志目录清单无效。');
+      const name = file.slice(this.directory.length + 1);
+      if (!name.startsWith('receipt-') || name.startsWith('receipt-writing-')) continue;
+      if (listing.folders.includes(file)) throw new Error('完成日志被目录占用。');
+      files.push({ file, sequence: receiptSequence(name) });
+    }
+    return files.sort((a,b) => a.sequence - b.sequence);
+  }
+  async loadReceipts(afterSequence = 0) {
+    checkReceiptWatermark(afterSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, afterSequence);
+    this.receiptSequence = undefined;
+    const files = await this.receiptFiles(), entries = [];
+    let expected = afterSequence + 1;
+    for (const { file, sequence } of files) {
+      if (sequence <= afterSequence) continue; // Durable checkpoint supersedes any leftover cleanup bytes.
+      if (sequence !== expected++) throw new Error('完成日志序号不连续；请保留现场。');
+      try {
+        const data = await this.read(file);
+        if (data === null) throw new Error('missing');
+        const row = JSON.parse(text(data));
+        if (row.version !== 1 || row.sequence !== sequence || typeof row.payload !== 'string' ||
+            await this.hashOf(JSON.stringify([sequence, row.payload])) !== row.hash) throw new Error('checksum');
+        const entry = JSON.parse(row.payload);
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('payload');
+        entries.push({ sequence, entry });
+      } catch { throw new Error('同步完成日志损坏或校验失败；已停止同步。'); }
+    }
+    this.receiptSequence = Math.max(this.receiptFloor, files.at(-1)?.sequence || 0);
+    return entries;
+  }
+  async saveReceipt(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('完成日志内容无效。');
+    await this.mkdir(this.directory);
+    if (this.receiptSequence === undefined) await this.loadReceipts(this.receiptFloor);
+    const sequence = this.receiptSequence + 1;
+    checkReceiptWatermark(sequence);
+    const payload = JSON.stringify(entry);
+    const encoded = JSON.stringify({ version: 1, sequence, payload, hash: await this.hashOf(JSON.stringify([sequence, payload])) });
+    const target = this.directory + '/receipt-' + String(sequence).padStart(16, '0') + '.json';
+    const tmp = this.directory + '/receipt-writing-' + randomUUID();
+    try {
+      await this.writeFresh(tmp, encoded);
+      await this.adapter.rename(tmp, target);
+      this.receiptSequence = sequence;
+      return sequence;
+    } catch (error) { this.receiptSequence = undefined; throw error; }
+  }
+  async clearReceipts(throughSequence) {
+    checkReceiptWatermark(throughSequence);
+    this.receiptFloor = Math.max(this.receiptFloor, throughSequence);
+    if (this.receiptSequence !== undefined) this.receiptSequence = Math.max(this.receiptSequence, throughSequence);
+    for (const { file, sequence } of await this.receiptFiles()) {
+      if (sequence <= throughSequence) await this.adapter.remove(file);
+    }
   }
   blobPath(id) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('无效的待上传内容编号。');
     return this.directory + '/outbox-' + id;
   }
   async stageBlob(id, value) {
-    if (digest(value) !== id) throw new Error('待上传内容校验失败。');
+    if (await this.hashOf(value) !== id) throw new Error('待上传内容校验失败。');
     await this.mkdir(this.directory);
     const target = this.blobPath(id);
     const present = await this.read(target);
     if (present !== null) {
-      if (digest(present) !== id) throw new Error('待上传内容损坏；保留现场。');
+      if (await this.hashOf(present) !== id) throw new Error('待上传内容损坏；保留现场。');
       return;
     }
     const tmp = this.directory + '/writing-' + randomUUID();
@@ -1205,7 +1861,7 @@ class MobileState extends AdapterIO {
   }
   async readStaged(id) {
     const value = await this.read(this.blobPath(id));
-    if (value === null || digest(value) !== id) throw new Error('待上传内容缺失或损坏；已停止同步。');
+    if (value === null || await this.hashOf(value) !== id) throw new Error('待上传内容缺失或损坏；已停止同步。');
     return value;
   }
   async clearStaged(id) { const p = this.blobPath(id); if (await this.adapter.exists(p)) await this.adapter.remove(p); }
@@ -1215,9 +1871,18 @@ class MobileVault extends AdapterIO {
   constructor(adapter, configDir = '.obsidian', guard = () => true, active = () => true) {
     super(adapter);
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') throw new Error('不支持这个 Obsidian 配置目录。');
+    this.tracksStats = true;
+    this.transferBudget = 32 * 1024 * 1024;
     this.configDir = configDir; this.guard = guard; this.active = active;
     this.privateDir = configDir + '/plugins/obsidian-webdav-versions/local-state';
     this.transaction = this.privateDir + '/mobile-transaction';
+    this.cacheFile = this.privateDir + '/mobile-hash-cache.json';
+    this.hashCache = new Map();
+    this.statHints = new Map();
+    this.cacheWarm = new Set();
+    this.cacheLoaded = false;
+    this.cacheDirty = false;
+    this.deep = false;
   }
   path(name) {
     if (typeof name !== 'string' || !name || /[\\\x00-\x1f]/.test(name) || /^[A-Za-z]:/.test(name) ||
@@ -1227,10 +1892,85 @@ class MobileVault extends AdapterIO {
     return name;
   }
   checkActive() { if (!this.active()) throw new Error('同步已暂停；请返回 Obsidian 前台。'); }
-  async read(name) { this.checkActive(); return super.read(this.path(name)); }
-  async hash(name) { return hashOf(await this.read(name)); }
+  async read(name, limit = MOBILE_LIMIT) { this.checkActive(); return super.read(this.path(name), Math.min(MOBILE_LIMIT, limit)); }
+  async size(name) {
+    this.checkActive(); this.path(name);
+    const stat = this.statHints.has(name) ? this.statHints.get(name) : await this.adapter.stat(name);
+    if (!stat) return null;
+    if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + name);
+    if (!Number.isSafeInteger(stat.size) || stat.size < 0) throw new Error('本地文件大小无效：' + name);
+    if (stat.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + name);
+    return stat.size;
+  }
+  beginRound({ deep = false } = {}) {
+    this.statHints.clear();
+    this.deep = deep;
+  }
+  async loadCache() {
+    if (this.cacheLoaded) return;
+    this.cacheLoaded = true;
+    try {
+      const data = await super.read(this.cacheFile);
+      if (data === null) return;
+      const row = JSON.parse(text(data));
+      if (row.version !== 1 || !Array.isArray(row.entries)) throw new Error('Invalid hash cache');
+      const entries = new Map();
+      for (const [name, value] of row.entries) {
+        this.path(name);
+        if (!value || !Number.isFinite(value.mtime) || !Number.isSafeInteger(value.size) || value.size < 0 ||
+            !/^[a-f0-9]{64}$/.test(value.hash)) throw new Error('Invalid hash cache entry');
+        entries.set(name, { mtime: value.mtime, size: value.size, hash: value.hash });
+      }
+      this.hashCache = entries;
+    } catch { this.hashCache.clear(); } // A cache is a hint; missing/corrupt hints must never stop sync.
+  }
+  invalidate(name) {
+    if (this.hashCache.delete(name)) this.cacheDirty = true;
+    this.statHints.delete(name);
+    this.cacheWarm.add(name);
+  }
+  async hash(name) {
+    this.checkActive(); this.path(name); await this.loadCache();
+    const stat = this.statHints.has(name) ? this.statHints.get(name) : await this.adapter.stat(name);
+    this.statHints.delete(name); // A listing stamp belongs to exactly one scan, never a later round.
+    if (!stat) {
+      if (this.hashCache.delete(name)) this.cacheDirty = true;
+      return null;
+    }
+    if (stat.type !== 'file') throw new Error('文件路径被目录占用：' + name);
+    if (stat.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + name);
+    const cached = this.hashCache.get(name);
+    const oldEnough = Number.isFinite(stat.mtime) && Date.now() - stat.mtime >= 2000;
+    if (!this.deep && !this.cacheWarm.has(name) && oldEnough && cached?.mtime === stat.mtime && cached.size === stat.size) return cached.hash;
+    const value = await super.read(name, MOBILE_LIMIT, stat);
+    const hash = await this.hashOf(value);
+    if (Number.isFinite(stat.mtime) && stat.size === value.length) {
+      const next = { mtime: stat.mtime, size: stat.size, hash };
+      if (!cached || cached.mtime !== next.mtime || cached.size !== next.size || cached.hash !== hash) {
+        this.hashCache.set(name, next); this.cacheDirty = true;
+      }
+    } else if (this.hashCache.delete(name)) this.cacheDirty = true;
+    return hash;
+  }
+  async flush() {
+    await this.loadCache();
+    // CAS invalidates the old signature. Read the actual saved file once, including
+    // any edit that followed CAS, so a later idle scan need not warm the whole vault.
+    for (const name of [...this.cacheWarm]) {
+      await this.hash(name);
+      this.cacheWarm.delete(name);
+    }
+    if (!this.cacheDirty) return;
+    await this.mkdir(this.privateDir);
+    const tmp = this.cacheFile + '.writing-' + randomUUID();
+    await this.adapter.writeBinary(tmp, arrayBuffer(JSON.stringify({ version: 1, entries: [...this.hashCache] })));
+    if (await this.adapter.exists(this.cacheFile)) await this.adapter.remove(this.cacheFile);
+    await this.adapter.rename(tmp, this.cacheFile);
+    this.cacheDirty = false;
+  }
   async list() {
     this.checkActive();
+    this.statHints.clear();
     const files = [];
     const visit = async dir => {
       const listed = await this.adapter.list(dir);
@@ -1244,6 +1984,7 @@ class MobileVault extends AdapterIO {
           const st = await this.adapter.stat(p);
           if (!st || st.type !== 'file') throw new Error('扫描期间文件发生变化，请重试。');
           if (st.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + p);
+          this.statHints.set(p, st);
           files.push(p);
         }
       }
@@ -1266,18 +2007,19 @@ class MobileVault extends AdapterIO {
       await this.finish(); return;
     }
     const tx = JSON.parse(text(meta)); this.path(tx.name);
+    this.invalidate(tx.name);
     for (const h of [tx.expected, tx.next]) if (h !== null && !/^[a-f0-9]{64}$/.test(h)) throw new Error('恢复记录校验失败。');
     const actual = await this.read(tx.name);
-    if (previous !== null && digest(previous) !== tx.expected) {
+    if (previous !== null && await this.hashOf(previous) !== tx.expected) {
       if (actual === null) await this.copyAbsent(this.transaction + '/previous', tx.name);
-      if (await this.hash(tx.name) !== digest(previous)) throw new Error('检测到并发写入；另一份内容保存在 ' + this.transaction + '/previous');
+      if (await this.hash(tx.name) !== await this.hashOf(previous)) throw new Error('检测到并发写入；另一份内容保存在 ' + this.transaction + '/previous');
       await this.finish(); return;
     }
     // With no moved original, an interrupted update was never applied. Keep any
     // user deletion or new contents. For a new file, exclusive copy is safe.
     if (actual === null && (previous !== null || tx.expected === null) && tx.next !== null) {
       const staged = await super.read(this.transaction + '/next');
-      if (hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
+      if (await this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
       const slash = tx.name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(tx.name.slice(0, slash));
       if (this.guard(tx.name, previous)) await this.copyAbsent(this.transaction + '/next', tx.name);
       else if (previous !== null) await this.copyAbsent(this.transaction + '/previous', tx.name);
@@ -1285,21 +2027,27 @@ class MobileVault extends AdapterIO {
     await this.finish();
   }
   async compareAndSet(name, expected, next) {
+    this.path(name);
+    this.invalidate(name);
+    try { return await this.applyFile(name, expected, next); }
+    finally { this.invalidate(name); }
+  }
+  async applyFile(name, expected, next) {
     this.path(name); this.checkActive(); await this.recover();
     if (next !== null && bytes(next).length > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB。');
     const before = await this.read(name);
-    if (hashOf(before) !== expected || !this.guard(name, before)) return false;
-    if (hashOf(next) === expected) return true;
+    if (await this.hashOf(before) !== expected || !this.guard(name, before)) return false;
+    if (await this.hashOf(next) === expected) return true;
     await this.mkdir(this.privateDir);
     await this.adapter.mkdir(this.transaction);
     if (next !== null) await this.writeFresh(this.transaction + '/next', next);
-    await this.writeFresh(this.transaction + '/intent.json', JSON.stringify({ name, expected, next: hashOf(next) }));
+    await this.writeFresh(this.transaction + '/intent.json', JSON.stringify({ name, expected, next: await this.hashOf(next) }));
     this.checkActive();
     const checked = await this.read(name);
-    if (hashOf(checked) !== expected || !this.guard(name, checked)) { await this.finish(); return false; }
+    if (await this.hashOf(checked) !== expected || !this.guard(name, checked)) { await this.finish(); return false; }
     if (before !== null) {
       await this.adapter.rename(name, this.transaction + '/previous');
-      if (hashOf(await super.read(this.transaction + '/previous')) !== expected) { await this.recover(); return false; }
+      if (await this.hashOf(await super.read(this.transaction + '/previous')) !== expected) { await this.recover(); return false; }
     }
     if (next !== null) {
       const slash = name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(name.slice(0, slash));
@@ -1355,6 +2103,7 @@ const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platf
 const { text } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
+const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
@@ -1409,7 +2158,7 @@ class SyncSettings extends PluginSettingTab {
       .addComponent(container => new SecretComponent(this.app, container).setValue(draft.secret).onChange(v => { draft.secret = v; }));
     new Setting(el).setName('设备名称').setDesc('用于辨认冲突副本，例如 iPhone、MacBook 或 Mac mini。')
       .addText(t => t.setValue(draft.device).onChange(v => { draft.device = v.trim(); }));
-    new Setting(el).setName('自动同步').setDesc('在前台打开笔记库后、文件变更约 5 秒后，以及每隔 60 秒同步。首次配置先手动同步，手机请等到已同步再离开。')
+    new Setting(el).setName('自动同步').setDesc('首次与回到前台时全量同步；文件变更后手机等待 15 秒、桌面等待 5 秒。空闲轮询从 60 秒逐步延长至 300 秒，每 10 分钟全量检查。首次配置先手动同步，手机请等到已同步再离开。')
       .addToggle(t => t.setValue(draft.auto).onChange(v => { draft.auto = v; }));
     new Setting(el).addButton(b => b.setButtonText('测试连接').onClick(async () => {
       try { await p.remoteFor(draft).probe(); new Notice('已确认可读取 WebDAV 文件夹'); }
@@ -1427,11 +2176,15 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.settings = Object.assign({}, defaults, await this.loadData());
     this.stopped = false;
     this.ready = false;
+    this.scheduler = new SyncScheduler({ mobile: Platform.isMobile,
+      setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: timer => window.clearTimeout(timer),
+      run: () => this.autoSync(), enabled: () => this.ready && this.settings.auto && !this.stopped, active: () => this.isActive() });
     this.status = this.addStatusBarItem();
     this.showStatus('就绪');
     this.status.addEventListener('click', () => this.run('sync', true));
     this.addRibbonIcon('refresh-cw', '飞牛 WebDAV：立即同步', () => this.run('sync', true));
     this.addCommand({ id: 'sync-now', name: '立即同步', callback: () => this.run('sync', true) });
+    this.addCommand({ id: 'sync-deep', name: '深度校验同步', callback: () => this.run('deep', true) });
     this.addCommand({ id: 'sync-status', name: '查看同步状态', callback: () => this.openStatus() });
     this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => new ConflictsModal(this.app, this.result).open() });
     this.addCommand({ id: 'resolve-current', name: '采用当前文件解决冲突', checkCallback: checking => {
@@ -1444,16 +2197,17 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
 
     for (const event of ['create', 'modify', 'rename', 'delete']) {
       this.registerEvent(this.app.vault.on(event, (file, previous) => {
-        if (this.visible(file.path) || (previous && this.visible(previous))) this.schedule();
+        const paths = [file.path, ...(event === 'rename' && previous ? [previous] : [])].filter(path => this.visible(path));
+        // A folder rename may have no per-file events; rescan its descendants.
+        if (paths.length) this.scheduler.change(Array.isArray(file.children) ? [] : paths, { full: Array.isArray(file.children) });
       }));
     }
-    this.registerDomEvent(window, 'online', () => this.schedule(1000));
+    this.registerDomEvent(window, 'online', () => { this.scheduler.resetPoll(); this.schedule(1000); });
     this.registerDomEvent(document, 'visibilitychange', () => {
-      if (this.isActive()) this.schedule(1000);
-      else window.clearTimeout(this.timer);
+      if (document.visibilityState !== 'hidden' && this.isActive()) this.scheduler.foreground();
+      else if (Platform.isMobile) this.scheduler.pause();
     });
-    this.registerInterval(window.setInterval(() => this.autoSync(), 60_000));
-    this.app.workspace.onLayoutReady(() => { this.ready = true; this.schedule(1200); });
+    this.app.workspace.onLayoutReady(() => { this.ready = true; this.scheduler.resetPoll(); this.schedule(1200); });
   }
   visible(name) {
     const parts = name.split('/');
@@ -1477,6 +2231,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       this.result = null;
       this.lastError = '';
       this.showStatus('就绪');
+      this.scheduler.reset();
       this.schedule();
     } finally { this.configuring = false; }
   }
@@ -1508,11 +2263,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.engine = new SyncEngine({ remote, local, state, device: s.device });
     return this.engine;
   }
-  schedule(delay = 5000) {
-    window.clearTimeout(this.timer);
-    if (this.ready && this.settings.auto && !this.stopped) this.timer = window.setTimeout(() => this.autoSync(), delay);
-  }
-  autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) void this.run('sync', false); }
+  schedule(delay) { this.scheduler.schedule(delay); }
+  autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) return this.run('sync', false); }
   isActive() { return !this.stopped && (!Platform.isMobile || document.visibilityState !== 'hidden'); }
   openStatus() {
     const modal = new Modal(this.app);
@@ -1523,6 +2275,11 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
     }
+    if (this.result?.stats) {
+      const s = this.result.stats;
+      modal.contentEl.createEl('p', { text: `${s.full ? '全量' : '增量'}同步：耗时 ${s.durationMs} 毫秒，读取库内文件 ${s.vaultReads} 次，内容及状态哈希 ${s.hashBytes} 字节，HTTP 请求 ${s.httpRequests} 次。` });
+    }
+    modal.contentEl.createEl('p', { text: `当前轮询间隔：${this.scheduler.pollIntervalMs / 1000} 秒。` });
     new Setting(modal.contentEl).addButton(b => b.setButtonText('立即同步').onClick(async () => { modal.close(); await this.run('sync', true); this.openStatus(); }));
     modal.open();
   }
@@ -1538,6 +2295,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     if (lock.has(key)) { if (notify) new Notice('正在同步，请等待完成'); return; }
     lock.add(key);
     this.busy = true;
+    const ticket = this.scheduler.begin({ manual: notify, deep: mode === 'deep', resolve: mode === 'resolve' });
     try {
       this.showStatus('同步中');
       if (this.app.plugins?.enabledPlugins?.has('obsidian-sync-webdav')) throw new Error('请先停用旧版 WebDAV Sync，再运行版本同步。');
@@ -1545,13 +2303,16 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync();
+      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
+      this.scheduler.complete(ticket, r);
+      if (r.stats) r.stats.pollIntervalMs = this.scheduler.pollIntervalMs;
       this.result = r;
       this.lastError = '';
       const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
       if (!this.stopped) this.showStatus(message);
       if (notify && !this.stopped) new Notice(message);
     } catch (err) {
+      this.scheduler.fail(ticket);
       if (this.stopped) return;
       const message = String(err.message || err);
       if (notify || this.lastError !== message) new Notice('WebDAV：' + message, 10000);
@@ -1561,7 +2322,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   onunload() {
     this.stopped = true;
-    window.clearTimeout(this.timer);
+    this.scheduler.stop();
   }
 };
 
@@ -1605,7 +2366,9 @@ function revisionId({ path, parents, blob, device, nonce }) {
   return digest(JSON.stringify(['obsidian-webdav-versions/v1', path, parents, blob, device, nonce]));
 }
 
+const validated = new WeakSet();
 function validateRevision(rev) {
+  if (validated.has(rev)) return rev;
   if (!rev || typeof rev !== 'object' || Array.isArray(rev) ||
       Object.keys(rev).sort().join(',') !== 'blob,device,id,nonce,parents,path') {
     throw new Error('Invalid revision fields');
@@ -1624,6 +2387,7 @@ function validateRevision(rev) {
     }
   }
   if (rev.id !== revisionId(rev)) throw new Error('Revision checksum mismatch');
+  Object.freeze(rev.parents); Object.freeze(rev); validated.add(rev);
   return rev;
 }
 
@@ -1712,8 +2476,8 @@ function registerPath(used, path) {
   }
 }
 
-function project(revisions) {
-  const { byId, leaves } = indexRevisions(revisions);
+function project(revisions, index = indexRevisions(revisions)) {
+  const { byId, leaves } = index;
   const used = new Map();
   const result = new Map();
   for (const path of [...leaves.keys()].sort(compare)) {
@@ -1732,7 +2496,107 @@ function project(revisions) {
   return result;
 }
 
-module.exports = { makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
+module.exports = { indexRevisions, makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
+
+},
+"scheduler":function(module,exports,require){
+'use strict';
+const BASE_POLL = 60_000, MAX_POLL = 300_000, FULL_INTERVAL = 600_000;
+
+// Scheduling and dirty generations are separate from the sync engine. An event
+// arriving after begin() must remain queued even when it names the same file.
+class SyncScheduler {
+  constructor({ mobile, now = () => Date.now(), setTimeout, clearTimeout, run, enabled, active }) {
+    this.now = now; this.setTimeout = setTimeout; this.clearTimeout = clearTimeout;
+    this.retryAt = null;
+    this.run = run; this.enabled = enabled; this.active = active;
+    this.debounceMs = mobile ? 15_000 : 5_000;
+    this.pollIntervalMs = BASE_POLL;
+    this.dirty = new Map(); this.eventDirty = new Set(); this.deferredPaths = new Set();
+    this.generation = 0; this.activity = 0;
+    this.fullRequested = 1; this.fullCompleted = 0; this.lastFullAt = null;
+    this.running = false; this.stopped = false;
+  }
+  allowed() { return !this.stopped && this.enabled() && this.active(); }
+  pause() {
+    this.clearTimeout(this.changeTimer); this.clearTimeout(this.pollTimer);
+    this.changeTimer = null; this.pollTimer = null;
+  }
+  stop() { this.stopped = true; this.pause(); }
+  reset() {
+    this.pause(); this.fullRequested++; this.lastFullAt = null;
+    this.pollIntervalMs = BASE_POLL; this.activity++;
+  }
+  resetPoll() { this.retryAt = null; this.pollIntervalMs = BASE_POLL; this.armPoll(); }
+  change(paths, { full = false } = {}) {
+    if (full) this.fullRequested++;
+    for (const path of paths) { this.dirty.set(path, ++this.generation); this.eventDirty.add(path); }
+    this.activity++; this.pollIntervalMs = BASE_POLL;
+    // An event may pull an armed poll forward to 60 s, but must never push it back.
+    if (this.pollTimer == null || this.pollDueAt > this.now() + BASE_POLL) this.armPoll();
+    this.schedule();
+  }
+  foreground() {
+    this.fullRequested++; this.activity++; this.resetPoll(); this.schedule(1000);
+  }
+  schedule(delay = this.debounceMs) {
+    this.clearTimeout(this.changeTimer); this.changeTimer = null;
+    delay = Math.max(delay, (this.retryAt ?? 0) - this.now());
+    this.dirtyDeadline = this.now() + delay;
+    if (!this.allowed() || this.running) return;
+    this.changeTimer = this.setTimeout(async () => {
+      this.changeTimer = null;
+      await this.dispatch();
+    }, delay);
+  }
+  armPoll() {
+    this.clearTimeout(this.pollTimer); this.pollTimer = null;
+    if (!this.allowed() || this.running) return;
+    const untilFull = this.lastFullAt === null ? this.pollIntervalMs : Math.max(0, this.lastFullAt + FULL_INTERVAL - this.now());
+    const delay = Math.max(1000, Math.min(this.pollIntervalMs, untilFull), (this.retryAt ?? this.now()) - this.now());
+    this.pollDueAt = this.now() + delay;
+    this.pollTimer = this.setTimeout(async () => {
+      this.pollTimer = null;
+      await this.dispatch();
+    }, delay);
+  }
+  async dispatch() {
+    if (!this.allowed()) return;
+    try { await this.run(); }
+    finally { if (!this.running) this.armPoll(); }
+  }
+  begin({ manual = false, deep = false, resolve = false } = {}) {
+    this.pause(); this.running = true; this.retryAt = null;
+    return { full: manual || deep || resolve || this.lastFullAt === null || this.fullRequested > this.fullCompleted || this.now() - this.lastFullAt >= FULL_INTERVAL,
+      dirty: [...this.dirty.keys()], deep, entries: new Map(this.dirty), fullRequested: this.fullRequested, activity: this.activity };
+  }
+  complete(ticket, result) {
+    const deferred = new Set(result.deferredPaths || []);
+    for (const [path, generation] of ticket.entries) {
+      if (this.dirty.get(path) === generation) {
+        // This event was observed by the completed round. A deferred result keeps
+        // the path for polling, but only a newer event may request a debounce.
+        this.eventDirty.delete(path);
+        if (!deferred.has(path)) this.dirty.delete(path);
+      }
+    }
+    for (const path of deferred) if (!this.dirty.has(path)) this.dirty.set(path, ++this.generation);
+    if (ticket.full) { this.lastFullAt = this.now(); this.fullCompleted = Math.max(this.fullCompleted, ticket.fullRequested); }
+    const newerActivity = this.activity !== ticket.activity;
+    const deferredChanged = deferred.size !== this.deferredPaths.size || [...deferred].some(path => !this.deferredPaths.has(path));
+    this.deferredPaths = deferred;
+    this.pollIntervalMs = result.uploaded || result.downloaded || result.deleted || newerActivity || deferredChanged ? BASE_POLL : Math.min(MAX_POLL, this.pollIntervalMs * 2);
+    this.running = false;
+    this.armPoll();
+    if (this.fullRequested > this.fullCompleted) this.schedule(1000);
+    else if (this.eventDirty.size) this.schedule(newerActivity ? Math.max(0, (this.dirtyDeadline ?? this.now() + this.debounceMs) - this.now()) : this.debounceMs);
+  }
+  fail() {
+    this.running = false; this.fullRequested++; this.pollIntervalMs = BASE_POLL; this.retryAt = this.now() + BASE_POLL;
+    this.pause(); this.armPoll();
+  }
+}
+module.exports = { SyncScheduler };
 
 },
 "sharded":function(module,exports,require){
@@ -1771,13 +2635,14 @@ async function mkdir(remote, url) {
 class ShardedStore extends DavRemote {
   constructor(options, legacy) {
     super(options); this.folder=new URL(V2_NAMESPACE+'/',this.base); this.legacy=legacy;
-    this.buckets=new Set();
+    this.buckets=new Set(); this.bucketPromises=new Map();
   }
   objectURL(id,suffix) {
     if (!/^[a-f0-9]{64}$/.test(id) || !['.json','.blob'].includes(suffix)) throw new Error('无效的对象标识。');
     return new URL(id[0]+'/'+id+suffix,this.folder);
   }
   async ensureFolder() {
+    if (this.created) return;
     const format=await this.read(new URL('format.json',this.folder),REV_LIMIT,true);
     if (!format || !validFormat(format)) throw new Error('远端分目录存储尚未完成迁移。');
     this.created=true;
@@ -1785,11 +2650,23 @@ class ShardedStore extends DavRemote {
   async immutable(url,data,type,limit,verify) {
     const name=url.pathname.slice(this.folder.pathname.length).split('/')[0];
     if (!HEX.test(name)) throw new Error('无效的分目录对象路径。');
-    if (!this.buckets.has(name)) {await mkdir(this,new URL(name+'/',this.folder));this.buckets.add(name);}
+    if (!this.buckets.has(name)) {
+      let creating=this.bucketPromises.get(name);
+      if (!creating) {
+        creating=mkdir(this,new URL(name+'/',this.folder)).then(()=>this.buckets.add(name));
+        this.bucketPromises.set(name,creating);
+      }
+      try { await creating; }
+      finally { if(this.bucketPromises.get(name)===creating)this.bucketPromises.delete(name); }
+    }
     return super.immutable(url,data,type,limit,verify);
   }
-  async inventory() {
+  async inventory({ syncing = false } = {}) {
     const root=await this.propfind(this.folder,1);
+    // Maintenance also calls inventory while these markers are being moved.
+    // Apply the sync gate here only for ordinary polling, using this same listing.
+    if (syncing && root.has('rollback.json')) throw new Error('远端正在回退存储布局；已暂停。');
+    if (syncing && !root.has('format.json')) throw new Error('远端分目录存储尚未完成迁移。');
     const buckets=[];
     for(const [name,dir] of root) {
       if(dir && HEX.test(name)) buckets.push(name);
@@ -1807,16 +2684,16 @@ class ShardedStore extends DavRemote {
       }
       this.buckets.add(bucket);
     });
+    this.rememberObjects([...objects.values()].map(url => url.href));
     return objects;
   }
   async listRevisions() {
-    const rollback=await this.read(new URL('rollback.json',this.folder),REV_LIMIT,true);
-    if(rollback!==null) throw new Error('远端正在回退存储布局；已暂停。');
+    this.clearBlobPreflights();
+    const objects=await this.inventory({ syncing: true });
     const leftovers=await this.legacy.propfind(this.legacy.folder,1,true);
     if(leftovers && [...leftovers].some(([name,dir])=>name!==MARKER || dir)) {
       throw new Error('旧目录仍有同步对象；请暂停旧客户端并完成迁移，避免遗漏旧端写入。');
     }
-    const objects=await this.inventory();
     const ids=[...objects.keys()].filter(n=>n.endsWith('.json')).map(n=>n.slice(0,-5));
     for(const id of this.revisions.keys()) if(!objects.has(id+'.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
     await parallel(ids.filter(id=>!this.revisions.has(id)),async id=>{
@@ -1824,7 +2701,7 @@ class ShardedStore extends DavRemote {
     });
     const result=ids.map(id=>this.revisions.get(id));
     for(const rev of result) if(rev.blob!==null&&!objects.has(rev.blob+'.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
-    return structuredClone(result);
+    return result;
   }
 }
 
@@ -1833,20 +2710,44 @@ class AdaptiveDavRemote {
     this.options=options;this.legacy=new DavRemote(options);this.sharded=new ShardedStore(options,this.legacy);
     this.selected=null;
   }
+  setStats(stats) {
+    for (const remote of [this.legacy, this.sharded]) {
+      remote.stats = stats;
+      remote.request.stats = stats;
+    }
+  }
   async select() {
+    if (this.selected) return this.selected;
     const r=this.legacy, folder=this.sharded.folder;
     if(await r.read(new URL('rollback.json',folder),REV_LIMIT,true)!==null) throw new Error('远端正在回退存储布局；已暂停。');
     const format=await r.read(new URL('format.json',folder),REV_LIMIT,true);
     if(format!==null) {
       if(!validFormat(format)) throw new Error('不支持的远端存储格式。');
+      this.sharded.created=true;
       this.selected=this.sharded;return this.selected;
     }
     if(await r.propfind(folder,0,true)!==null) throw new Error('远端分目录存储迁移未完成；请完成迁移或回退。');
     this.selected=this.legacy;return this.selected;
   }
   probe() {return this.legacy.probe();}
-  async listRevisions() {return (await this.select()).listRevisions();}
-  async getBlob(id) {return (this.selected||await this.select()).getBlob(id);}
+  async listRevisions() {
+    this.clearBlobPreflights();
+    try {
+      // A v1 selection must still notice another device beginning migration.
+      // A missing v2 collection implies both metadata GETs would be 404.
+      if (this.selected === this.legacy && await this.legacy.propfind(this.sharded.folder,0,true) !== null) {
+        this.selected = null;
+      }
+      return await (await this.select()).listRevisions();
+    } catch (error) {
+      this.selected = null;
+      this.sharded.created = false;
+      throw error;
+    }
+  }
+  clearBlobPreflights() { this.legacy.clearBlobPreflights(); this.sharded.clearBlobPreflights(); }
+  async getBlobSize(id) {return (this.selected||await this.select()).getBlobSize(id);}
+  async getBlob(id,expectedSize) {return (this.selected||await this.select()).getBlob(id,expectedSize);}
   async putBlob(id,data) {return (this.selected||await this.select()).putBlob(id,data);}
   async putRevision(rev) {return (this.selected||await this.select()).putRevision(rev);}
 }

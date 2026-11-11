@@ -68,4 +68,12 @@ function digest(value) {
   block(tail,0); if (tail.length === 128) block(tail,64);
   return [...h].map(n => n.toString(16).padStart(8,'0')).join('');
 }
-module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest };
+// Large content hashes run in the host's asynchronous native crypto implementation.
+// Revision identifiers retain digest(), preserving the protocol's synchronous API.
+async function sha256(value) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle?.digest) return module.exports.digest(value);
+  const result = await subtle.digest('SHA-256', bytes(value));
+  return [...new Uint8Array(result)].map(n => n.toString(16).padStart(2, '0')).join('');
+}
+module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest, sha256 };

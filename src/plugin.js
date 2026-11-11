@@ -5,6 +5,7 @@ const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platf
 const { text } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
+const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
@@ -59,7 +60,7 @@ class SyncSettings extends PluginSettingTab {
       .addComponent(container => new SecretComponent(this.app, container).setValue(draft.secret).onChange(v => { draft.secret = v; }));
     new Setting(el).setName('设备名称').setDesc('用于辨认冲突副本，例如 iPhone、MacBook 或 Mac mini。')
       .addText(t => t.setValue(draft.device).onChange(v => { draft.device = v.trim(); }));
-    new Setting(el).setName('自动同步').setDesc('在前台打开笔记库后、文件变更约 5 秒后，以及每隔 60 秒同步。首次配置先手动同步，手机请等到已同步再离开。')
+    new Setting(el).setName('自动同步').setDesc('首次与回到前台时全量同步；文件变更后手机等待 15 秒、桌面等待 5 秒。空闲轮询从 60 秒逐步延长至 300 秒，每 10 分钟全量检查。首次配置先手动同步，手机请等到已同步再离开。')
       .addToggle(t => t.setValue(draft.auto).onChange(v => { draft.auto = v; }));
     new Setting(el).addButton(b => b.setButtonText('测试连接').onClick(async () => {
       try { await p.remoteFor(draft).probe(); new Notice('已确认可读取 WebDAV 文件夹'); }
@@ -77,11 +78,15 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.settings = Object.assign({}, defaults, await this.loadData());
     this.stopped = false;
     this.ready = false;
+    this.scheduler = new SyncScheduler({ mobile: Platform.isMobile,
+      setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: timer => window.clearTimeout(timer),
+      run: () => this.autoSync(), enabled: () => this.ready && this.settings.auto && !this.stopped, active: () => this.isActive() });
     this.status = this.addStatusBarItem();
     this.showStatus('就绪');
     this.status.addEventListener('click', () => this.run('sync', true));
     this.addRibbonIcon('refresh-cw', '飞牛 WebDAV：立即同步', () => this.run('sync', true));
     this.addCommand({ id: 'sync-now', name: '立即同步', callback: () => this.run('sync', true) });
+    this.addCommand({ id: 'sync-deep', name: '深度校验同步', callback: () => this.run('deep', true) });
     this.addCommand({ id: 'sync-status', name: '查看同步状态', callback: () => this.openStatus() });
     this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => new ConflictsModal(this.app, this.result).open() });
     this.addCommand({ id: 'resolve-current', name: '采用当前文件解决冲突', checkCallback: checking => {
@@ -94,16 +99,17 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
 
     for (const event of ['create', 'modify', 'rename', 'delete']) {
       this.registerEvent(this.app.vault.on(event, (file, previous) => {
-        if (this.visible(file.path) || (previous && this.visible(previous))) this.schedule();
+        const paths = [file.path, ...(event === 'rename' && previous ? [previous] : [])].filter(path => this.visible(path));
+        // A folder rename may have no per-file events; rescan its descendants.
+        if (paths.length) this.scheduler.change(Array.isArray(file.children) ? [] : paths, { full: Array.isArray(file.children) });
       }));
     }
-    this.registerDomEvent(window, 'online', () => this.schedule(1000));
+    this.registerDomEvent(window, 'online', () => { this.scheduler.resetPoll(); this.schedule(1000); });
     this.registerDomEvent(document, 'visibilitychange', () => {
-      if (this.isActive()) this.schedule(1000);
-      else window.clearTimeout(this.timer);
+      if (document.visibilityState !== 'hidden' && this.isActive()) this.scheduler.foreground();
+      else if (Platform.isMobile) this.scheduler.pause();
     });
-    this.registerInterval(window.setInterval(() => this.autoSync(), 60_000));
-    this.app.workspace.onLayoutReady(() => { this.ready = true; this.schedule(1200); });
+    this.app.workspace.onLayoutReady(() => { this.ready = true; this.scheduler.resetPoll(); this.schedule(1200); });
   }
   visible(name) {
     const parts = name.split('/');
@@ -127,6 +133,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       this.result = null;
       this.lastError = '';
       this.showStatus('就绪');
+      this.scheduler.reset();
       this.schedule();
     } finally { this.configuring = false; }
   }
@@ -158,11 +165,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.engine = new SyncEngine({ remote, local, state, device: s.device });
     return this.engine;
   }
-  schedule(delay = 5000) {
-    window.clearTimeout(this.timer);
-    if (this.ready && this.settings.auto && !this.stopped) this.timer = window.setTimeout(() => this.autoSync(), delay);
-  }
-  autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) void this.run('sync', false); }
+  schedule(delay) { this.scheduler.schedule(delay); }
+  autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) return this.run('sync', false); }
   isActive() { return !this.stopped && (!Platform.isMobile || document.visibilityState !== 'hidden'); }
   openStatus() {
     const modal = new Modal(this.app);
@@ -173,6 +177,11 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
     }
+    if (this.result?.stats) {
+      const s = this.result.stats;
+      modal.contentEl.createEl('p', { text: `${s.full ? '全量' : '增量'}同步：耗时 ${s.durationMs} 毫秒，读取库内文件 ${s.vaultReads} 次，内容及状态哈希 ${s.hashBytes} 字节，HTTP 请求 ${s.httpRequests} 次。` });
+    }
+    modal.contentEl.createEl('p', { text: `当前轮询间隔：${this.scheduler.pollIntervalMs / 1000} 秒。` });
     new Setting(modal.contentEl).addButton(b => b.setButtonText('立即同步').onClick(async () => { modal.close(); await this.run('sync', true); this.openStatus(); }));
     modal.open();
   }
@@ -188,6 +197,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     if (lock.has(key)) { if (notify) new Notice('正在同步，请等待完成'); return; }
     lock.add(key);
     this.busy = true;
+    const ticket = this.scheduler.begin({ manual: notify, deep: mode === 'deep', resolve: mode === 'resolve' });
     try {
       this.showStatus('同步中');
       if (this.app.plugins?.enabledPlugins?.has('obsidian-sync-webdav')) throw new Error('请先停用旧版 WebDAV Sync，再运行版本同步。');
@@ -195,13 +205,16 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync();
+      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
+      this.scheduler.complete(ticket, r);
+      if (r.stats) r.stats.pollIntervalMs = this.scheduler.pollIntervalMs;
       this.result = r;
       this.lastError = '';
       const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
       if (!this.stopped) this.showStatus(message);
       if (notify && !this.stopped) new Notice(message);
     } catch (err) {
+      this.scheduler.fail(ticket);
       if (this.stopped) return;
       const message = String(err.message || err);
       if (notify || this.lastError !== message) new Notice('WebDAV：' + message, 10000);
@@ -211,6 +224,6 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   onunload() {
     this.stopped = true;
-    window.clearTimeout(this.timer);
+    this.scheduler.stop();
   }
 };

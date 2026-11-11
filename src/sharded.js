@@ -33,13 +33,14 @@ async function mkdir(remote, url) {
 class ShardedStore extends DavRemote {
   constructor(options, legacy) {
     super(options); this.folder=new URL(V2_NAMESPACE+'/',this.base); this.legacy=legacy;
-    this.buckets=new Set();
+    this.buckets=new Set(); this.bucketPromises=new Map();
   }
   objectURL(id,suffix) {
     if (!/^[a-f0-9]{64}$/.test(id) || !['.json','.blob'].includes(suffix)) throw new Error('无效的对象标识。');
     return new URL(id[0]+'/'+id+suffix,this.folder);
   }
   async ensureFolder() {
+    if (this.created) return;
     const format=await this.read(new URL('format.json',this.folder),REV_LIMIT,true);
     if (!format || !validFormat(format)) throw new Error('远端分目录存储尚未完成迁移。');
     this.created=true;
@@ -47,11 +48,23 @@ class ShardedStore extends DavRemote {
   async immutable(url,data,type,limit,verify) {
     const name=url.pathname.slice(this.folder.pathname.length).split('/')[0];
     if (!HEX.test(name)) throw new Error('无效的分目录对象路径。');
-    if (!this.buckets.has(name)) {await mkdir(this,new URL(name+'/',this.folder));this.buckets.add(name);}
+    if (!this.buckets.has(name)) {
+      let creating=this.bucketPromises.get(name);
+      if (!creating) {
+        creating=mkdir(this,new URL(name+'/',this.folder)).then(()=>this.buckets.add(name));
+        this.bucketPromises.set(name,creating);
+      }
+      try { await creating; }
+      finally { if(this.bucketPromises.get(name)===creating)this.bucketPromises.delete(name); }
+    }
     return super.immutable(url,data,type,limit,verify);
   }
-  async inventory() {
+  async inventory({ syncing = false } = {}) {
     const root=await this.propfind(this.folder,1);
+    // Maintenance also calls inventory while these markers are being moved.
+    // Apply the sync gate here only for ordinary polling, using this same listing.
+    if (syncing && root.has('rollback.json')) throw new Error('远端正在回退存储布局；已暂停。');
+    if (syncing && !root.has('format.json')) throw new Error('远端分目录存储尚未完成迁移。');
     const buckets=[];
     for(const [name,dir] of root) {
       if(dir && HEX.test(name)) buckets.push(name);
@@ -69,16 +82,16 @@ class ShardedStore extends DavRemote {
       }
       this.buckets.add(bucket);
     });
+    this.rememberObjects([...objects.values()].map(url => url.href));
     return objects;
   }
   async listRevisions() {
-    const rollback=await this.read(new URL('rollback.json',this.folder),REV_LIMIT,true);
-    if(rollback!==null) throw new Error('远端正在回退存储布局；已暂停。');
+    this.clearBlobPreflights();
+    const objects=await this.inventory({ syncing: true });
     const leftovers=await this.legacy.propfind(this.legacy.folder,1,true);
     if(leftovers && [...leftovers].some(([name,dir])=>name!==MARKER || dir)) {
       throw new Error('旧目录仍有同步对象；请暂停旧客户端并完成迁移，避免遗漏旧端写入。');
     }
-    const objects=await this.inventory();
     const ids=[...objects.keys()].filter(n=>n.endsWith('.json')).map(n=>n.slice(0,-5));
     for(const id of this.revisions.keys()) if(!objects.has(id+'.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
     await parallel(ids.filter(id=>!this.revisions.has(id)),async id=>{
@@ -86,7 +99,7 @@ class ShardedStore extends DavRemote {
     });
     const result=ids.map(id=>this.revisions.get(id));
     for(const rev of result) if(rev.blob!==null&&!objects.has(rev.blob+'.blob')) throw new Error('远端版本引用的附件缺失；已停止同步。');
-    return structuredClone(result);
+    return result;
   }
 }
 
@@ -95,20 +108,44 @@ class AdaptiveDavRemote {
     this.options=options;this.legacy=new DavRemote(options);this.sharded=new ShardedStore(options,this.legacy);
     this.selected=null;
   }
+  setStats(stats) {
+    for (const remote of [this.legacy, this.sharded]) {
+      remote.stats = stats;
+      remote.request.stats = stats;
+    }
+  }
   async select() {
+    if (this.selected) return this.selected;
     const r=this.legacy, folder=this.sharded.folder;
     if(await r.read(new URL('rollback.json',folder),REV_LIMIT,true)!==null) throw new Error('远端正在回退存储布局；已暂停。');
     const format=await r.read(new URL('format.json',folder),REV_LIMIT,true);
     if(format!==null) {
       if(!validFormat(format)) throw new Error('不支持的远端存储格式。');
+      this.sharded.created=true;
       this.selected=this.sharded;return this.selected;
     }
     if(await r.propfind(folder,0,true)!==null) throw new Error('远端分目录存储迁移未完成；请完成迁移或回退。');
     this.selected=this.legacy;return this.selected;
   }
   probe() {return this.legacy.probe();}
-  async listRevisions() {return (await this.select()).listRevisions();}
-  async getBlob(id) {return (this.selected||await this.select()).getBlob(id);}
+  async listRevisions() {
+    this.clearBlobPreflights();
+    try {
+      // A v1 selection must still notice another device beginning migration.
+      // A missing v2 collection implies both metadata GETs would be 404.
+      if (this.selected === this.legacy && await this.legacy.propfind(this.sharded.folder,0,true) !== null) {
+        this.selected = null;
+      }
+      return await (await this.select()).listRevisions();
+    } catch (error) {
+      this.selected = null;
+      this.sharded.created = false;
+      throw error;
+    }
+  }
+  clearBlobPreflights() { this.legacy.clearBlobPreflights(); this.sharded.clearBlobPreflights(); }
+  async getBlobSize(id) {return (this.selected||await this.select()).getBlobSize(id);}
+  async getBlob(id,expectedSize) {return (this.selected||await this.select()).getBlob(id,expectedSize);}
   async putBlob(id,data) {return (this.selected||await this.select()).putBlob(id,data);}
   async putRevision(rev) {return (this.selected||await this.select()).putRevision(rev);}
 }
