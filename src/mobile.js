@@ -1,5 +1,5 @@
 'use strict';
-const { bytes, text, arrayBuffer, digest, randomUUID } = require('./bytes');
+const { bytes, text, arrayBuffer, digest, sha256, randomUUID } = require('./bytes');
 
 // Native requestUrl buffers responses; keep mobile files below a conservative cap.
 const MOBILE_LIMIT = 128 * 1024 * 1024;
@@ -62,10 +62,10 @@ function mobileRequest(requestUrl, active = () => true) {
 
 class AdapterIO {
   constructor(adapter) { this.adapter = adapter; }
-  hashOf(value) {
+  async hashOf(value) {
     if (value === null) return null;
     if (this.stats) this.stats.hashBytes += bytes(value).length;
-    return digest(value);
+    return sha256(value);
   }
   async mkdir(dir) {
     let prefix = '';
@@ -96,7 +96,7 @@ class AdapterIO {
     const b = bytes(value);
     if (await this.adapter.exists(path)) throw new Error('暂存路径已经存在。');
     await this.adapter.writeBinary(path, arrayBuffer(b));
-    if (this.hashOf(await AdapterIO.prototype.read.call(this, path)) !== this.hashOf(b)) throw new Error('本地暂存写入校验失败。');
+    if (await this.hashOf(await AdapterIO.prototype.read.call(this, path)) !== await this.hashOf(b)) throw new Error('本地暂存写入校验失败。');
   }
 }
 
@@ -115,7 +115,7 @@ class MobileState extends AdapterIO {
       present++;
       try {
         const row = JSON.parse(text(b));
-        if (Number.isSafeInteger(row.sequence) && row.sequence > 0 && typeof row.payload === 'string' && this.hashOf(row.payload) === row.hash) {
+        if (Number.isSafeInteger(row.sequence) && row.sequence > 0 && typeof row.payload === 'string' && await this.hashOf(row.payload) === row.hash) {
           valid.push({ ...row, slot, state: JSON.parse(row.payload) });
         }
       } catch { /* Validation below stops on corruption of a committed slot. */ }
@@ -129,7 +129,7 @@ class MobileState extends AdapterIO {
     const latest = (await this.snapshots())[0];
     const slot = latest ? 1 - latest.slot : 0;
     const payload = JSON.stringify(value);
-    const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: this.hashOf(payload) });
+    const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: await this.hashOf(payload) });
     const target = this.directory + '/state-' + slot + '.json';
     const tmp = this.directory + '/writing-' + randomUUID();
     await this.writeFresh(tmp, encoded);
@@ -142,12 +142,12 @@ class MobileState extends AdapterIO {
     return this.directory + '/outbox-' + id;
   }
   async stageBlob(id, value) {
-    if (this.hashOf(value) !== id) throw new Error('待上传内容校验失败。');
+    if (await this.hashOf(value) !== id) throw new Error('待上传内容校验失败。');
     await this.mkdir(this.directory);
     const target = this.blobPath(id);
     const present = await this.read(target);
     if (present !== null) {
-      if (this.hashOf(present) !== id) throw new Error('待上传内容损坏；保留现场。');
+      if (await this.hashOf(present) !== id) throw new Error('待上传内容损坏；保留现场。');
       return;
     }
     const tmp = this.directory + '/writing-' + randomUUID();
@@ -156,7 +156,7 @@ class MobileState extends AdapterIO {
   }
   async readStaged(id) {
     const value = await this.read(this.blobPath(id));
-    if (value === null || this.hashOf(value) !== id) throw new Error('待上传内容缺失或损坏；已停止同步。');
+    if (value === null || await this.hashOf(value) !== id) throw new Error('待上传内容缺失或损坏；已停止同步。');
     return value;
   }
   async clearStaged(id) { const p = this.blobPath(id); if (await this.adapter.exists(p)) await this.adapter.remove(p); }
@@ -180,7 +180,7 @@ class MobileVault extends AdapterIO {
   }
   checkActive() { if (!this.active()) throw new Error('同步已暂停；请返回 Obsidian 前台。'); }
   async read(name) { this.checkActive(); return super.read(this.path(name)); }
-  async hash(name) { return this.hashOf(await this.read(name)); }
+  async hash(name) { return await this.hashOf(await this.read(name)); }
   async list() {
     this.checkActive();
     const files = [];
@@ -220,16 +220,16 @@ class MobileVault extends AdapterIO {
     const tx = JSON.parse(text(meta)); this.path(tx.name);
     for (const h of [tx.expected, tx.next]) if (h !== null && !/^[a-f0-9]{64}$/.test(h)) throw new Error('恢复记录校验失败。');
     const actual = await this.read(tx.name);
-    if (previous !== null && this.hashOf(previous) !== tx.expected) {
+    if (previous !== null && await this.hashOf(previous) !== tx.expected) {
       if (actual === null) await this.copyAbsent(this.transaction + '/previous', tx.name);
-      if (await this.hash(tx.name) !== this.hashOf(previous)) throw new Error('检测到并发写入；另一份内容保存在 ' + this.transaction + '/previous');
+      if (await this.hash(tx.name) !== await this.hashOf(previous)) throw new Error('检测到并发写入；另一份内容保存在 ' + this.transaction + '/previous');
       await this.finish(); return;
     }
     // With no moved original, an interrupted update was never applied. Keep any
     // user deletion or new contents. For a new file, exclusive copy is safe.
     if (actual === null && (previous !== null || tx.expected === null) && tx.next !== null) {
       const staged = await super.read(this.transaction + '/next');
-      if (this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
+      if (await this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
       const slash = tx.name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(tx.name.slice(0, slash));
       if (this.guard(tx.name, previous)) await this.copyAbsent(this.transaction + '/next', tx.name);
       else if (previous !== null) await this.copyAbsent(this.transaction + '/previous', tx.name);
@@ -240,18 +240,18 @@ class MobileVault extends AdapterIO {
     this.path(name); this.checkActive(); await this.recover();
     if (next !== null && bytes(next).length > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB。');
     const before = await this.read(name);
-    if (this.hashOf(before) !== expected || !this.guard(name, before)) return false;
-    if (this.hashOf(next) === expected) return true;
+    if (await this.hashOf(before) !== expected || !this.guard(name, before)) return false;
+    if (await this.hashOf(next) === expected) return true;
     await this.mkdir(this.privateDir);
     await this.adapter.mkdir(this.transaction);
     if (next !== null) await this.writeFresh(this.transaction + '/next', next);
-    await this.writeFresh(this.transaction + '/intent.json', JSON.stringify({ name, expected, next: this.hashOf(next) }));
+    await this.writeFresh(this.transaction + '/intent.json', JSON.stringify({ name, expected, next: await this.hashOf(next) }));
     this.checkActive();
     const checked = await this.read(name);
-    if (this.hashOf(checked) !== expected || !this.guard(name, checked)) { await this.finish(); return false; }
+    if (await this.hashOf(checked) !== expected || !this.guard(name, checked)) { await this.finish(); return false; }
     if (before !== null) {
       await this.adapter.rename(name, this.transaction + '/previous');
-      if (this.hashOf(await super.read(this.transaction + '/previous')) !== expected) { await this.recover(); return false; }
+      if (await this.hashOf(await super.read(this.transaction + '/previous')) !== expected) { await this.recover(); return false; }
     }
     if (next !== null) {
       const slash = name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(name.slice(0, slash));

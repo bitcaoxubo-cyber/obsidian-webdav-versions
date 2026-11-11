@@ -138,3 +138,35 @@ test('corruption of a committed mobile state stops instead of silently forgettin
 });
 
 module.exports = { Adapter };
+
+test('A3: asynchronous SHA-256 matches portable digest at boundaries, slices and large inputs', async () => {
+  const { sha256 } = require('../src/bytes');
+  for (const n of [0,1,2,3,55,56,57,63,64,65,119,120,127,128,129,1024,1048576]) {
+    const value = randomBytes(n);
+    assert.equal(await sha256(value), digest(value));
+  }
+  const backing = randomBytes(200);
+  assert.equal(await sha256(backing.subarray(7,137)), digest(backing.subarray(7,137)));
+  assert.equal(await sha256('液膜😀\r\n'), digest('液膜😀\r\n'));
+});
+
+test('A3: asynchronous SHA-256 uses WebCrypto and falls back when subtle is absent', async () => {
+  const { sha256 } = require('../src/bytes');
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const original = globalThis.crypto;
+  let called = 0;
+  try {
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { subtle: { digest: async (...args) => {
+      called++; return original.subtle.digest(...args);
+    } } } });
+    assert.equal(await sha256('native'), digest('native'));
+    assert.equal(called, 1);
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} });
+    const moduleBytes = require('../src/bytes'), originalDigest = moduleBytes.digest;
+    let fallbacks = 0;
+    moduleBytes.digest = value => { fallbacks++; return originalDigest(value); };
+    try { assert.equal(await sha256('fallback'), digest('fallback')); }
+    finally { moduleBytes.digest = originalDigest; }
+    assert.equal(fallbacks, 1);
+  } finally { Object.defineProperty(globalThis, 'crypto', descriptor); }
+});

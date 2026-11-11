@@ -2,9 +2,9 @@
 // leopard530/obsidian-sync-webdav. Immutable storage, integrity checks, strict
 // multistatus handling and the non-redirecting HTTPS transport are new.
 'use strict';
-const { bytes, base64 } = require('./bytes');
+const { bytes, base64, sha256 } = require('./bytes');
 const sax = require('./vendor/sax');
-const { digest, validateRevision } = require('./protocol');
+const { validateRevision } = require('./protocol');
 
 const NAMESPACE = 'obsidian-webdav-versions-v1';
 const HASH = /^[0-9a-f]{64}$/;
@@ -147,9 +147,9 @@ class DavRemote {
     this.created = false;
   }
 
-  hashOf(value) {
+  async hashOf(value) {
     if (this.stats) this.stats.hashBytes += bytes(value).length;
-    return digest(value);
+    return sha256(value);
   }
 
   async call(method, url, headers, body, limit) {
@@ -213,16 +213,16 @@ class DavRemote {
   async immutable(url, data, type, limit, verify) {
     await this.ensureFolder();
     const previous = await this.read(url, limit, true);
-    if (previous !== null) { verify(previous); return; }
+    if (previous !== null) { await verify(previous); return; }
     const r = await this.call('PUT', url, { 'If-None-Match': '*', 'Content-Type': type }, data, REV_LIMIT);
     if (![200, 201, 204, 412].includes(r.status)) throw httpError('PUT', r.status);
     // Even 412 can be another honest client writing the same hash. A weak DAV
     // can ignore the precondition. All honest writers use the same content ID.
-    verify(await this.read(url, limit));
+    await verify(await this.read(url, limit));
   }
   async getBlob(id) {
     const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
-    if (this.hashOf(bytes) !== id) throw integrity();
+    if (await this.hashOf(bytes) !== id) throw integrity();
     this.verifiedBlobs.add(id);
     return bytes;
   }
@@ -230,9 +230,9 @@ class DavRemote {
     checkHash(id);
     const dataBytes = bytes(data);
     if (dataBytes.length > BLOB_LIMIT) throw new Error('单个附件超过 WebDAV 的 512 MiB 限制。');
-    if (this.hashOf(dataBytes) !== id) throw integrity();
-    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, got => {
-      if (this.hashOf(got) !== id) throw integrity();
+    if (await this.hashOf(dataBytes) !== id) throw integrity();
+    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, async got => {
+      if (await this.hashOf(got) !== id) throw integrity();
     });
     this.verifiedBlobs.add(id);
   }

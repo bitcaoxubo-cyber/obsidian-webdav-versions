@@ -71,7 +71,15 @@ function digest(value) {
   block(tail,0); if (tail.length === 128) block(tail,64);
   return [...h].map(n => n.toString(16).padStart(8,'0')).join('');
 }
-module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest };
+// Large content hashes run in the host's asynchronous native crypto implementation.
+// Revision identifiers retain digest(), preserving the protocol's synchronous API.
+async function sha256(value) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle?.digest) return module.exports.digest(value);
+  const result = await subtle.digest('SHA-256', bytes(value));
+  return [...new Uint8Array(result)].map(n => n.toString(16).padStart(2, '0')).join('');
+}
+module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest, sha256 };
 
 },
 "dav":function(module,exports,require){
@@ -79,9 +87,9 @@ module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, ran
 // leopard530/obsidian-sync-webdav. Immutable storage, integrity checks, strict
 // multistatus handling and the non-redirecting HTTPS transport are new.
 'use strict';
-const { bytes, base64 } = require('./bytes');
+const { bytes, base64, sha256 } = require('./bytes');
 const sax = require('./vendor/sax');
-const { digest, validateRevision } = require('./protocol');
+const { validateRevision } = require('./protocol');
 
 const NAMESPACE = 'obsidian-webdav-versions-v1';
 const HASH = /^[0-9a-f]{64}$/;
@@ -224,9 +232,9 @@ class DavRemote {
     this.created = false;
   }
 
-  hashOf(value) {
+  async hashOf(value) {
     if (this.stats) this.stats.hashBytes += bytes(value).length;
-    return digest(value);
+    return sha256(value);
   }
 
   async call(method, url, headers, body, limit) {
@@ -290,16 +298,16 @@ class DavRemote {
   async immutable(url, data, type, limit, verify) {
     await this.ensureFolder();
     const previous = await this.read(url, limit, true);
-    if (previous !== null) { verify(previous); return; }
+    if (previous !== null) { await verify(previous); return; }
     const r = await this.call('PUT', url, { 'If-None-Match': '*', 'Content-Type': type }, data, REV_LIMIT);
     if (![200, 201, 204, 412].includes(r.status)) throw httpError('PUT', r.status);
     // Even 412 can be another honest client writing the same hash. A weak DAV
     // can ignore the precondition. All honest writers use the same content ID.
-    verify(await this.read(url, limit));
+    await verify(await this.read(url, limit));
   }
   async getBlob(id) {
     const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
-    if (this.hashOf(bytes) !== id) throw integrity();
+    if (await this.hashOf(bytes) !== id) throw integrity();
     this.verifiedBlobs.add(id);
     return bytes;
   }
@@ -307,9 +315,9 @@ class DavRemote {
     checkHash(id);
     const dataBytes = bytes(data);
     if (dataBytes.length > BLOB_LIMIT) throw new Error('单个附件超过 WebDAV 的 512 MiB 限制。');
-    if (this.hashOf(dataBytes) !== id) throw integrity();
-    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, got => {
-      if (this.hashOf(got) !== id) throw integrity();
+    if (await this.hashOf(dataBytes) !== id) throw integrity();
+    await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, async got => {
+      if (await this.hashOf(got) !== id) throw integrity();
     });
     this.verifiedBlobs.add(id);
   }
@@ -366,11 +374,11 @@ module.exports = { DavRemote, NAMESPACE, checkedRevision };
 "engine":function(module,exports,require){
 'use strict';
 
-const { digest, headsFor, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
+const { headsFor, isConflictPath, makeRevision, project, safePath, validateRevision } = require('./protocol');
 
-const { base64, fromBase64 } = require('./bytes');
+const { base64, fromBase64, sha256 } = require('./bytes');
 
-const hashOf = bytes => bytes === null ? null : digest(bytes);
+const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
 const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, deferred: 0,
@@ -482,7 +490,7 @@ class SyncEngine {
     else s.files.delete(physical);
   }
 
-  _hash(value) {
+  async _hash(value) {
     if (value !== null) this.stats.hashBytes += typeof value === 'string' ? new TextEncoder().encode(value).length : value.byteLength;
     return hashOf(value);
   }
@@ -505,7 +513,7 @@ class SyncEngine {
       if (!staged && typeof bytes !== 'string') throw new Error('Missing staged content for ' + physical);
       const data = staged ? await this.state.readStaged(rev.blob) : fromBase64(bytes);
       if (!data || data.byteLength > MAX_BYTES) throw new Error('Missing or oversized staged content for ' + physical);
-      if (this._hash(data) !== rev.blob) throw new Error('Staged content checksum mismatch: ' + physical);
+      if (await this._hash(data) !== rev.blob) throw new Error('Staged content checksum mismatch: ' + physical);
       await this.remote.putBlob(rev.blob, data);
     }
     // A retry always publishes the exact same document and identifier.
@@ -522,7 +530,7 @@ class SyncEngine {
 
   async _push(s, physical, path, parents, data, result) {
     checkSize(data, physical);
-    const rev = makeRevision({ path, parents, blob: this._hash(data), device: this.device });
+    const rev = makeRevision({ path, parents, blob: await this._hash(data), device: this.device });
     // Check that a new conflict, including its generated filename, is representable before publication.
     project([...s.revs.values()].filter(r => r.path === path).concat(rev));
     s.reviewed.delete(path);
@@ -563,7 +571,7 @@ class SyncEngine {
     if (before.versions.get(path)?.size < 2) throw new Error('No unresolved conflict for ' + path);
     for (const [physical, v] of before.files) {
       if (v.path !== path || physical === selected) continue;
-      if (this._hash(await this._read(physical)) !== v.blob) {
+      if (await this._hash(await this._read(physical)) !== v.blob) {
         throw new Error('Another conflict copy was edited or removed; sync and review it first: ' + physical);
       }
     }
@@ -589,7 +597,7 @@ class SyncEngine {
       if (base && this.local.hash && await this._localHash(physical) === base.blob) continue;
       const data = await this._read(physical);
       checkSize(data, physical);
-      const hash = this._hash(data);
+      const hash = await this._hash(data);
       if (base) {
         if (hash !== base.blob) await this._push(s, physical, base.path, base.parents, data, result);
         continue;
@@ -627,7 +635,7 @@ class SyncEngine {
         continue;
       }
       const data = next ? await this.remote.getBlob(wanted) : null;
-      if (this._hash(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
+      if (await this._hash(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
       s.pending = { kind: 'apply', physical, next };
       await this._save(s);
       const applied = await this.local.compareAndSet(physical, expected, data);
@@ -1101,7 +1109,7 @@ module.exports={migrateStorage,rollbackStorage,verifyObject};
 },
 "mobile":function(module,exports,require){
 'use strict';
-const { bytes, text, arrayBuffer, digest, randomUUID } = require('./bytes');
+const { bytes, text, arrayBuffer, digest, sha256, randomUUID } = require('./bytes');
 
 // Native requestUrl buffers responses; keep mobile files below a conservative cap.
 const MOBILE_LIMIT = 128 * 1024 * 1024;
@@ -1164,10 +1172,10 @@ function mobileRequest(requestUrl, active = () => true) {
 
 class AdapterIO {
   constructor(adapter) { this.adapter = adapter; }
-  hashOf(value) {
+  async hashOf(value) {
     if (value === null) return null;
     if (this.stats) this.stats.hashBytes += bytes(value).length;
-    return digest(value);
+    return sha256(value);
   }
   async mkdir(dir) {
     let prefix = '';
@@ -1198,7 +1206,7 @@ class AdapterIO {
     const b = bytes(value);
     if (await this.adapter.exists(path)) throw new Error('暂存路径已经存在。');
     await this.adapter.writeBinary(path, arrayBuffer(b));
-    if (this.hashOf(await AdapterIO.prototype.read.call(this, path)) !== this.hashOf(b)) throw new Error('本地暂存写入校验失败。');
+    if (await this.hashOf(await AdapterIO.prototype.read.call(this, path)) !== await this.hashOf(b)) throw new Error('本地暂存写入校验失败。');
   }
 }
 
@@ -1217,7 +1225,7 @@ class MobileState extends AdapterIO {
       present++;
       try {
         const row = JSON.parse(text(b));
-        if (Number.isSafeInteger(row.sequence) && row.sequence > 0 && typeof row.payload === 'string' && this.hashOf(row.payload) === row.hash) {
+        if (Number.isSafeInteger(row.sequence) && row.sequence > 0 && typeof row.payload === 'string' && await this.hashOf(row.payload) === row.hash) {
           valid.push({ ...row, slot, state: JSON.parse(row.payload) });
         }
       } catch { /* Validation below stops on corruption of a committed slot. */ }
@@ -1231,7 +1239,7 @@ class MobileState extends AdapterIO {
     const latest = (await this.snapshots())[0];
     const slot = latest ? 1 - latest.slot : 0;
     const payload = JSON.stringify(value);
-    const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: this.hashOf(payload) });
+    const encoded = JSON.stringify({ sequence: (latest?.sequence || 0) + 1, payload, hash: await this.hashOf(payload) });
     const target = this.directory + '/state-' + slot + '.json';
     const tmp = this.directory + '/writing-' + randomUUID();
     await this.writeFresh(tmp, encoded);
@@ -1244,12 +1252,12 @@ class MobileState extends AdapterIO {
     return this.directory + '/outbox-' + id;
   }
   async stageBlob(id, value) {
-    if (this.hashOf(value) !== id) throw new Error('待上传内容校验失败。');
+    if (await this.hashOf(value) !== id) throw new Error('待上传内容校验失败。');
     await this.mkdir(this.directory);
     const target = this.blobPath(id);
     const present = await this.read(target);
     if (present !== null) {
-      if (this.hashOf(present) !== id) throw new Error('待上传内容损坏；保留现场。');
+      if (await this.hashOf(present) !== id) throw new Error('待上传内容损坏；保留现场。');
       return;
     }
     const tmp = this.directory + '/writing-' + randomUUID();
@@ -1258,7 +1266,7 @@ class MobileState extends AdapterIO {
   }
   async readStaged(id) {
     const value = await this.read(this.blobPath(id));
-    if (value === null || this.hashOf(value) !== id) throw new Error('待上传内容缺失或损坏；已停止同步。');
+    if (value === null || await this.hashOf(value) !== id) throw new Error('待上传内容缺失或损坏；已停止同步。');
     return value;
   }
   async clearStaged(id) { const p = this.blobPath(id); if (await this.adapter.exists(p)) await this.adapter.remove(p); }
@@ -1282,7 +1290,7 @@ class MobileVault extends AdapterIO {
   }
   checkActive() { if (!this.active()) throw new Error('同步已暂停；请返回 Obsidian 前台。'); }
   async read(name) { this.checkActive(); return super.read(this.path(name)); }
-  async hash(name) { return this.hashOf(await this.read(name)); }
+  async hash(name) { return await this.hashOf(await this.read(name)); }
   async list() {
     this.checkActive();
     const files = [];
@@ -1322,16 +1330,16 @@ class MobileVault extends AdapterIO {
     const tx = JSON.parse(text(meta)); this.path(tx.name);
     for (const h of [tx.expected, tx.next]) if (h !== null && !/^[a-f0-9]{64}$/.test(h)) throw new Error('恢复记录校验失败。');
     const actual = await this.read(tx.name);
-    if (previous !== null && this.hashOf(previous) !== tx.expected) {
+    if (previous !== null && await this.hashOf(previous) !== tx.expected) {
       if (actual === null) await this.copyAbsent(this.transaction + '/previous', tx.name);
-      if (await this.hash(tx.name) !== this.hashOf(previous)) throw new Error('检测到并发写入；另一份内容保存在 ' + this.transaction + '/previous');
+      if (await this.hash(tx.name) !== await this.hashOf(previous)) throw new Error('检测到并发写入；另一份内容保存在 ' + this.transaction + '/previous');
       await this.finish(); return;
     }
     // With no moved original, an interrupted update was never applied. Keep any
     // user deletion or new contents. For a new file, exclusive copy is safe.
     if (actual === null && (previous !== null || tx.expected === null) && tx.next !== null) {
       const staged = await super.read(this.transaction + '/next');
-      if (this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
+      if (await this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
       const slash = tx.name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(tx.name.slice(0, slash));
       if (this.guard(tx.name, previous)) await this.copyAbsent(this.transaction + '/next', tx.name);
       else if (previous !== null) await this.copyAbsent(this.transaction + '/previous', tx.name);
@@ -1342,18 +1350,18 @@ class MobileVault extends AdapterIO {
     this.path(name); this.checkActive(); await this.recover();
     if (next !== null && bytes(next).length > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB。');
     const before = await this.read(name);
-    if (this.hashOf(before) !== expected || !this.guard(name, before)) return false;
-    if (this.hashOf(next) === expected) return true;
+    if (await this.hashOf(before) !== expected || !this.guard(name, before)) return false;
+    if (await this.hashOf(next) === expected) return true;
     await this.mkdir(this.privateDir);
     await this.adapter.mkdir(this.transaction);
     if (next !== null) await this.writeFresh(this.transaction + '/next', next);
-    await this.writeFresh(this.transaction + '/intent.json', JSON.stringify({ name, expected, next: this.hashOf(next) }));
+    await this.writeFresh(this.transaction + '/intent.json', JSON.stringify({ name, expected, next: await this.hashOf(next) }));
     this.checkActive();
     const checked = await this.read(name);
-    if (this.hashOf(checked) !== expected || !this.guard(name, checked)) { await this.finish(); return false; }
+    if (await this.hashOf(checked) !== expected || !this.guard(name, checked)) { await this.finish(); return false; }
     if (before !== null) {
       await this.adapter.rename(name, this.transaction + '/previous');
-      if (this.hashOf(await super.read(this.transaction + '/previous')) !== expected) { await this.recover(); return false; }
+      if (await this.hashOf(await super.read(this.transaction + '/previous')) !== expected) { await this.recover(); return false; }
     }
     if (next !== null) {
       const slash = name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(name.slice(0, slash));
