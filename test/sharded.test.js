@@ -117,3 +117,15 @@ test('rollback restores the original flat objects byte-for-byte and archives met
   assert.ok(!f.calls.some(x=>x.method==='DELETE'));
   assert.equal([...f.files.keys()].filter(p=>p.startsWith(v1)).length,before.size);
 });
+
+test('B3: selected v2 validates format only once while uploading ten files', async () => {
+  const f = fixture(); f.dirs.add(v2); f.files.set(v2 + 'format.json', Buffer.from(FORMAT_TEXT));
+  const client = new AdaptiveDavRemote(f.options);
+  await client.listRevisions();
+  for (let i = 0; i < 10; i++) {
+    const body = bytes('B3 upload ' + i), hash = digest(body);
+    await client.putBlob(hash, body);
+    await client.putRevision(makeRevision({ path: 'B3-' + i + '.md', blob: hash, device: 'test' }));
+  }
+  assert.equal(f.calls.filter(c => c.method === 'GET' && c.path === v2 + 'format.json').length, 1);
+});

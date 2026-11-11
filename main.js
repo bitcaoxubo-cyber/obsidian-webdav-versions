@@ -2054,6 +2054,7 @@ class ShardedStore extends DavRemote {
     return new URL(id[0]+'/'+id+suffix,this.folder);
   }
   async ensureFolder() {
+    if (this.created) return;
     const format=await this.read(new URL('format.json',this.folder),REV_LIMIT,true);
     if (!format || !validFormat(format)) throw new Error('远端分目录存储尚未完成迁移。');
     this.created=true;
@@ -2121,6 +2122,7 @@ class AdaptiveDavRemote {
     const format=await r.read(new URL('format.json',folder),REV_LIMIT,true);
     if(format!==null) {
       if(!validFormat(format)) throw new Error('不支持的远端存储格式。');
+      this.sharded.created=true;
       this.selected=this.sharded;return this.selected;
     }
     if(await r.propfind(folder,0,true)!==null) throw new Error('远端分目录存储迁移未完成；请完成迁移或回退。');
