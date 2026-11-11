@@ -4,7 +4,10 @@ const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 
-const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const hash = (bytes, stats) => {
+  if (stats) stats.hashBytes += typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.byteLength;
+  return createHash('sha256').update(bytes).digest('hex');
+};
 
 function validateRelative(name) {
   if (typeof name !== 'string' || name.includes('\\') || /^[A-Za-z]:/.test(name) || /[\u0000-\u001f]/.test(name) ||
@@ -72,13 +75,13 @@ class DiskState {
   }
   async stageBlob(id, bytes) {
     safeDir(this.staging, true);
-    if (hash(bytes) !== id) throw new Error('待上传内容校验失败');
+    if (hash(bytes, this.stats) !== id) throw new Error('待上传内容校验失败');
     atomicWrite(this.stagedPath(id), bytes);
   }
   async readStaged(id) {
     safeDir(this.staging);
     const bytes = readBytes(this.stagedPath(id));
-    if (bytes === null || hash(bytes) !== id) throw new Error('待上传内容缺失或损坏；已停止同步');
+    if (bytes === null || hash(bytes, this.stats) !== id) throw new Error('待上传内容缺失或损坏；已停止同步');
     return bytes;
   }
   async clearStaged(id) {
@@ -93,6 +96,7 @@ class DiskVault {
     this.configDir = configDir;
     this.guard = guard;
     this.hashCache = new Map();
+    this.tracksStats = true;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
     }
@@ -137,7 +141,13 @@ class DiskVault {
     return files;
   }
 
-  async read(name) { return readBytes(this.filePath(name), 512 * 1024 * 1024); }
+  readFile(file, limit) {
+    const data = readBytes(file, limit);
+    if (data !== null && this.stats && !file.startsWith(this.privateDir + path.sep)) this.stats.vaultReads++;
+    return data;
+  }
+  hashOf(value) { return hash(value, this.stats); }
+  async read(name) { return this.readFile(this.filePath(name), 512 * 1024 * 1024); }
 
   async hash(name) {
     const file = this.filePath(name);
@@ -155,7 +165,11 @@ class DiskVault {
     if (cached?.stamp === before) return cached.hash;
     const hasher = createHash('sha256');
     const stream = fs.createReadStream(file, { flags: fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW });
-    for await (const chunk of stream) hasher.update(chunk);
+    if (this.stats) this.stats.vaultReads++;
+    for await (const chunk of stream) {
+      if (this.stats) this.stats.hashBytes += chunk.byteLength;
+      hasher.update(chunk);
+    }
     if (before !== await stamp()) throw new Error('笔记正在变动，将在下一轮重试：' + name);
     const value = hasher.digest('hex');
     this.hashCache.set(name, { stamp: before, hash: value });
@@ -167,7 +181,7 @@ class DiskVault {
   recover() {
     if (!statMaybe(this.transaction)) return;
     safeDir(this.transaction);
-    const metadata = readBytes(path.join(this.transaction, 'intent.json'));
+    const metadata = this.readFile(path.join(this.transaction, 'intent.json'));
     const old = path.join(this.transaction, 'previous');
     if (!metadata) {
       if (statMaybe(old)) throw new Error('本地恢复记录不完整：' + this.transaction);
@@ -176,14 +190,14 @@ class DiskVault {
     }
     const tx = JSON.parse(metadata);
     const file = this.filePath(tx.name, true);
-    const previous = readBytes(old);
+    const previous = this.readFile(old);
     if (previous !== null) {
-      if (hash(previous) !== tx.expected) {
+      if (this.hashOf(previous) !== tx.expected) {
         if (!statMaybe(file)) fs.linkSync(old, file);
-        else if (hash(readBytes(file)) !== hash(previous)) throw new Error('检测到另一程序同时写入，原文保存在 ' + old);
+        else if (this.hashOf(this.readFile(file)) !== this.hashOf(previous)) throw new Error('检测到另一程序同时写入，原文保存在 ' + old);
       } else if (!statMaybe(file) && tx.next !== null) {
         const staged = path.join(this.transaction, 'next');
-        if (hash(readBytes(staged)) !== tx.next) throw new Error('本地暂存校验失败：' + staged);
+        if (this.hashOf(this.readFile(staged)) !== tx.next) throw new Error('本地暂存校验失败：' + staged);
         fs.linkSync(staged, file);
       }
     }
@@ -202,20 +216,20 @@ class DiskVault {
   async compareAndSet(name, expected, next) {
     this.recover();
     const file = this.filePath(name, next !== null);
-    const before = readBytes(file, 512 * 1024 * 1024);
-    if ((before === null ? null : hash(before)) !== expected || !this.guard(name, before)) return false;
+    const before = this.readFile(file, 512 * 1024 * 1024);
+    if ((before === null ? null : this.hashOf(before)) !== expected || !this.guard(name, before)) return false;
     if ((next === null && before === null) || (next !== null && before !== null && next.equals(before))) return true;
     fs.mkdirSync(this.transaction, { mode: 0o700 });
     const old = path.join(this.transaction, 'previous');
     const staged = path.join(this.transaction, 'next');
     try {
       if (next !== null) atomicWrite(staged, next);
-      atomicWrite(path.join(this.transaction, 'intent.json'), JSON.stringify({ name, expected, next: next === null ? null : hash(next) }));
+      atomicWrite(path.join(this.transaction, 'intent.json'), JSON.stringify({ name, expected, next: next === null ? null : this.hashOf(next) }));
       syncDir(this.privateDir);
       if (before !== null) {
         try { fs.renameSync(file, old); }
         catch (err) { if (err.code === 'ENOENT') { this.finishTransaction(); return false; } throw err; }
-        if (hash(readBytes(old)) !== expected) { this.recover(); return false; }
+        if (this.hashOf(this.readFile(old)) !== expected) { this.recover(); return false; }
       }
       if (next !== null) {
         try { fs.linkSync(staged, file); }

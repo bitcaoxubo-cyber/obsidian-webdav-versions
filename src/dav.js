@@ -147,6 +147,11 @@ class DavRemote {
     this.created = false;
   }
 
+  hashOf(value) {
+    if (this.stats) this.stats.hashBytes += bytes(value).length;
+    return digest(value);
+  }
+
   async call(method, url, headers, body, limit) {
     if (url.origin !== this.base.origin) throw new Error('已阻止跨站 WebDAV 请求。');
     headers = { 'Accept-Encoding': 'identity', ...headers };
@@ -154,6 +159,8 @@ class DavRemote {
     if (body !== undefined) headers['Content-Length'] = String(body.length);
     let result;
     try {
+      if (this.request.tracksStats) this.request.stats = this.stats;
+      else if (this.stats) this.stats.httpRequests++;
       result = await this.request({ method, url, headers, body, limit });
     } catch (err) {
       // TLS and transport exceptions may contain user information or signed URLs.
@@ -215,7 +222,7 @@ class DavRemote {
   }
   async getBlob(id) {
     const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
-    if (digest(bytes) !== id) throw integrity();
+    if (this.hashOf(bytes) !== id) throw integrity();
     this.verifiedBlobs.add(id);
     return bytes;
   }
@@ -223,9 +230,9 @@ class DavRemote {
     checkHash(id);
     const dataBytes = bytes(data);
     if (dataBytes.length > BLOB_LIMIT) throw new Error('单个附件超过 WebDAV 的 512 MiB 限制。');
-    if (digest(dataBytes) !== id) throw integrity();
+    if (this.hashOf(dataBytes) !== id) throw integrity();
     await this.immutable(this.objectURL(id, '.blob'), dataBytes, 'application/octet-stream', BLOB_LIMIT, got => {
-      if (digest(got) !== id) throw integrity();
+      if (this.hashOf(got) !== id) throw integrity();
     });
     this.verifiedBlobs.add(id);
   }

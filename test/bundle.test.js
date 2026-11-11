@@ -29,7 +29,7 @@ function fakeDAV() {
 }
 
 test('built plugin loads and completes native-API sync without Node, Buffer, process or filesystem paths',async()=>{
-  const dav=fakeDAV(), notices=[], nativeCalls=[];
+  const dav=fakeDAV(), notices=[], nativeCalls=[], panels=[];
   const element=()=>({setText(){},setAttribute(){},addEventListener(){}});
   class Plugin {
     async loadData(){return null;} async saveData(v){this.saved=v;}
@@ -37,7 +37,7 @@ test('built plugin loads and completes native-API sync without Node, Buffer, pro
     addCommand(){} addSettingTab(){} registerEvent(){} registerDomEvent(){} registerInterval(){}
   }
   const document={visibilityState:'visible'};
-  const host={ Plugin, PluginSettingTab:class{}, Modal:class{}, Setting:class{}, SecretComponent:class{},
+  const host={ Plugin, PluginSettingTab:class{}, Modal:class{constructor(){this.titleEl={setText(){}};this.contentEl={createEl:(tag,{text})=>panels.push(text)};}open(){}}, Setting:class{addButton(){return this;}}, SecretComponent:class{},
     Notice:class{constructor(m){notices.push(m);}}, Platform:{isMobile:true,isIosApp:true}, requestUrl:dav.requestUrl };
   const context=vm.createContext({module:{exports:{}},require:name=>{nativeCalls.push(name);if(name==='obsidian')return host;throw new Error('Unavailable on mobile: '+name);},
     crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,Uint32Array,ArrayBuffer,DataView,URL,structuredClone,btoa,atob,
@@ -54,6 +54,10 @@ test('built plugin loads and completes native-API sync without Node, Buffer, pro
   assert.equal(a.p.lastError,''); assert.equal(a.p.statusMessage,'已同步');
   const b=await make(); await b.p.run('sync',true);
   assert.equal(b.p.lastError,''); assert.equal(text(b.adapter.files.get('测试.md')),'from iPhone');
+  for (const key of ['durationMs','vaultReads','hashBytes','httpRequests','full']) assert.equal(typeof a.p.result.stats[key], 'number');
+  assert.ok(a.p.result.stats.httpRequests > 0);
+  a.p.openStatus();
+  assert.ok(panels.some(t=>t.includes('读取库内文件') && t.includes(String(a.p.result.stats.vaultReads))));
   assert.equal(a.p.saved.secret,'local'); assert.equal(Object.values(a.p.saved).includes('test:test'),false);
   assert.equal(nativeCalls.some(n=>n.startsWith('node:')),false);
   assert.ok(nativeCalls.every(n=>n==='obsidian'||n==='stream')); // SAX's optional stream support is caught.

@@ -95,6 +95,12 @@ class AdaptiveDavRemote {
     this.options=options;this.legacy=new DavRemote(options);this.sharded=new ShardedStore(options,this.legacy);
     this.selected=null;
   }
+  setStats(stats) {
+    for (const remote of [this.legacy, this.sharded]) {
+      remote.stats = stats;
+      remote.request.stats = stats;
+    }
+  }
   async select() {
     const r=this.legacy, folder=this.sharded.folder;
     if(await r.read(new URL('rollback.json',folder),REV_LIMIT,true)!==null) throw new Error('远端正在回退存储布局；已暂停。');

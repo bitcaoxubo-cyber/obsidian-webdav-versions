@@ -8,7 +8,8 @@ const hashOf = bytes => bytes === null ? null : digest(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
 const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, deferred: 0,
-  conflictPaths: [], deferredPaths: [] });
+  conflictPaths: [], deferredPaths: [],
+  stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
 
 // Conflict names are valid physical paths, but are never valid logical note names.
 function checkPhysical(path) {
@@ -115,8 +116,19 @@ class SyncEngine {
     else s.files.delete(physical);
   }
 
+  _hash(value) {
+    if (value !== null) this.stats.hashBytes += typeof value === 'string' ? new TextEncoder().encode(value).length : value.byteLength;
+    return hashOf(value);
+  }
+
+  async _read(physical) {
+    const data = await this.local.read(physical);
+    if (data !== null && !this.local.tracksStats) this.stats.vaultReads++;
+    return data;
+  }
+
   async _localHash(physical) {
-    return this.local.hash ? this.local.hash(physical) : hashOf(await this.local.read(physical));
+    return this.local.hash ? this.local.hash(physical) : this._hash(await this._read(physical));
   }
 
   async _ackPush(s, result) {
@@ -127,7 +139,7 @@ class SyncEngine {
       if (!staged && typeof bytes !== 'string') throw new Error('Missing staged content for ' + physical);
       const data = staged ? await this.state.readStaged(rev.blob) : fromBase64(bytes);
       if (!data || data.byteLength > MAX_BYTES) throw new Error('Missing or oversized staged content for ' + physical);
-      if (digest(data) !== rev.blob) throw new Error('Staged content checksum mismatch: ' + physical);
+      if (this._hash(data) !== rev.blob) throw new Error('Staged content checksum mismatch: ' + physical);
       await this.remote.putBlob(rev.blob, data);
     }
     // A retry always publishes the exact same document and identifier.
@@ -144,7 +156,7 @@ class SyncEngine {
 
   async _push(s, physical, path, parents, data, result) {
     checkSize(data, physical);
-    const rev = makeRevision({ path, parents, blob: hashOf(data), device: this.device });
+    const rev = makeRevision({ path, parents, blob: this._hash(data), device: this.device });
     // Check that a new conflict, including its generated filename, is representable before publication.
     project([...s.revs.values()].filter(r => r.path === path).concat(rev));
     s.reviewed.delete(path);
@@ -185,11 +197,11 @@ class SyncEngine {
     if (before.versions.get(path)?.size < 2) throw new Error('No unresolved conflict for ' + path);
     for (const [physical, v] of before.files) {
       if (v.path !== path || physical === selected) continue;
-      if (hashOf(await this.local.read(physical)) !== v.blob) {
+      if (this._hash(await this._read(physical)) !== v.blob) {
         throw new Error('Another conflict copy was edited or removed; sync and review it first: ' + physical);
       }
     }
-    const data = await this.local.read(selected);
+    const data = await this._read(selected);
     if (data === null) throw new Error('Selected conflict file is missing: ' + selected);
     await this._push(s, selected, path, tips, data, result);
   }
@@ -209,9 +221,9 @@ class SyncEngine {
     for (const physical of paths) {
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._localHash(physical) === base.blob) continue;
-      const data = await this.local.read(physical);
+      const data = await this._read(physical);
       checkSize(data, physical);
-      const hash = hashOf(data);
+      const hash = this._hash(data);
       if (base) {
         if (hash !== base.blob) await this._push(s, physical, base.path, base.parents, data, result);
         continue;
@@ -249,7 +261,7 @@ class SyncEngine {
         continue;
       }
       const data = next ? await this.remote.getBlob(wanted) : null;
-      if (hashOf(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
+      if (this._hash(data) !== wanted) throw new Error('Downloaded content checksum mismatch for ' + physical);
       s.pending = { kind: 'apply', physical, next };
       await this._save(s);
       const applied = await this.local.compareAndSet(physical, expected, data);
@@ -267,6 +279,14 @@ class SyncEngine {
 
   async _run(selected) {
     const result = counts();
+    const started = Date.now();
+    this.stats = result.stats;
+    this.local.stats = this.state.stats = result.stats;
+    if (this.remote.setStats) this.remote.setStats(result.stats);
+    else {
+      this.remote.stats = result.stats;
+      if (this.remote.request) this.remote.request.stats = result.stats;
+    }
     await this.local.recover?.();
     const s = await this._open();
     await this._recover(s, result);
@@ -302,6 +322,7 @@ class SyncEngine {
     result.deferredPaths = [...deferred].sort();
     result.deferred = result.deferredPaths.length;
     await this._save(s);
+    result.stats.durationMs = Date.now() - started;
     return result;
   }
 }

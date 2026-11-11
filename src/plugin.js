@@ -173,6 +173,10 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
     }
+    if (this.result?.stats) {
+      const s = this.result.stats;
+      modal.contentEl.createEl('p', { text: `${s.full ? '全量' : '增量'}同步：耗时 ${s.durationMs} 毫秒，读取库内文件 ${s.vaultReads} 次，内容及状态哈希 ${s.hashBytes} 字节，HTTP 请求 ${s.httpRequests} 次。` });
+    }
     new Setting(modal.contentEl).addButton(b => b.setButtonText('立即同步').onClick(async () => { modal.close(); await this.run('sync', true); this.openStatus(); }));
     modal.open();
   }

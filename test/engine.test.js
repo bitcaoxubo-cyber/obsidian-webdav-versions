@@ -223,3 +223,16 @@ test('oversized file is rejected before hashing, writing a journal or publishing
   await assert.rejects(a.e.sync(), /512 MiB.*large\.pdf/); assert.equal(r.revisions.size, 0);
   assert.equal(a.state.disk, null);
 });
+
+
+test('A0: sync returns numeric per-round runtime statistics', async () => {
+  const r = store(), c = client(r, 'stats'); c.write('note.md', 'hello');
+  const first = await c.e.sync();
+  for (const key of ['durationMs', 'vaultReads', 'hashBytes', 'httpRequests', 'full']) {
+    assert.equal(typeof first.stats[key], 'number', key);
+    assert.ok(first.stats[key] >= 0, key);
+  }
+  assert.equal(first.stats.full, 1);
+  assert.ok(first.stats.vaultReads > 0);
+  assert.ok(first.stats.hashBytes >= 5);
+});

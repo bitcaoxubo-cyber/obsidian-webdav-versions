@@ -1,0 +1,40 @@
+✔ two independent desktop clients append divergent histories on weak DAV and read verified bytes (27.158417ms)
+✔ server truncation, wrong GET bytes, missing blob, and successful-looking bad PUT stop sync (5.207709ms)
+✔ 412 is idempotent only when the readback verifies; interrupted writes can be retried (4.060583ms)
+✔ Depth:1 fails closed on truncated XML, wrong namespace, cross-origin paths and partial statuses (4.0375ms)
+✔ credentials stay on the original HTTPS endpoint, failures disclose no response or password (2.519584ms)
+✔ real filesystem vaults keep concurrent Markdown and PDF byte-for-byte through restart, new device, and resolution (1614.202292ms)
+✔ acceptance receipts attest each check without exposing settings and reject stale, mismatched or malformed records (1569.274917ms)
+✔ A0: mobile metrics count real vault reads and content/state hashing (4.146708ms)
+✔ A0: mobile transport metrics include HEAD and GET without double counting (0.740583ms)
+✔ A0: desktop transport counts one HTTP request per call (0.119917ms)
+✔ A0: desktop native hash reads count only vault content (17.067917ms)
+✔ local CAS guards unsaved editor, preserves exact binary and detects equal-size replacements (61.309125ms)
+✔ unfinished disk replacement survives restart without crossing into configuration or symlinks (21.898416ms)
+✔ lists scientific titles containing colons and skips unbound symlinks, including broken links (52.335375ms)
+✔ sync preserves remote history when a tracked path or remote download hits a link (153.873625ms)
+✔ mismatched inode captured during recovery is restored, and scoped state survives restart (40.311458ms)
+✔ portable SHA-256 and encoding match native crypto at block boundaries and large binary inputs (80.522167ms)
+✔ mobile clients restore into an empty vault, preserve offline conflicts and binary attachments, then resolve (19.401333ms)
+✔ interrupted upload retries exact staged bytes after phone restart and later edit (1.18525ms)
+✔ mobile restart recovery at staging (0.151542ms)
+✔ mobile restart recovery at intent (0.123292ms)
+✔ mobile restart recovery at moved (0.167834ms)
+✔ mobile restart recovery at copied (0.150167ms)
+✔ mobile restart recovery at cleanup (0.140375ms)
+✔ a concurrent saved edit moved with the original is restored instead of overwritten (0.191459ms)
+✔ exclusive copy preserves a new destination created while applying remote content (0.213792ms)
+✔ unsaved editor, background state, oversized files and hidden paths fail without overwriting notes (0.274042ms)
+✔ state alternation survives an interrupted inactive write and isolates accounts (2.078125ms)
+✔ native HTTP uses ArrayBuffer, preserves DAV error statuses, lowercases headers and preflights large blobs (0.296458ms)
+✔ native HTTP never writes credentials into surfaced transport errors (0.231791ms)
+✔ large mobile downloads assemble verified ranges and reject a truncated segment (124.992833ms)
+✔ corruption of a committed mobile state stops instead of silently forgetting its baseline (0.251458ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3267.509959
