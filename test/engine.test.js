@@ -248,3 +248,95 @@ for (const withHash of [false, true]) test('A2: idle observes each local path on
   assert.equal(visits.size, 5);
   assert.ok([...visits.values()].every(n => n === 1));
 });
+
+test('A5: incremental sync never lists or observes unchanged clean paths', async () => {
+  const r = store(), c = client(r, 'incremental');
+  c.write('changed.md', 'base'); c.write('clean.md', 'keep'); await c.e.sync();
+  const read = c.local.read.bind(c.local), visits = [];
+  c.local.list = async () => { throw new Error('incremental must not list'); };
+  c.local.read = async p => { visits.push(p); return read(p); };
+  c.write('changed.md', 'edited');
+  const result = await c.e.sync({ full: false, dirty: ['changed.md'] });
+  assert.equal(result.uploaded, 1); assert.equal(result.stats.full, 0);
+  assert.ok(!visits.includes('clean.md'));
+  visits.length = 0; await c.e.sync({ full: false, dirty: [] }); assert.deepEqual(visits, []);
+});
+
+test('A5: a missed external edit waits for the next full round', async () => {
+  const r = store(), c = client(r, 'external'); c.write('note.md', 'base'); await c.e.sync();
+  c.write('note.md', 'outside event system');
+  assert.equal((await c.e.sync({ full: false, dirty: [] })).uploaded, 0);
+  assert.equal(r.revisions.size, 1);
+  assert.equal((await c.e.sync({ full: true })).uploaded, 1);
+  assert.equal(r.revisions.size, 2);
+});
+
+test('A5: incremental remote changes and tombstones still apply with no scan', async () => {
+  const r = store(), a = client(r, 'remote'), b = client(r, 'incremental');
+  a.write('note.md', 'base'); await a.e.sync(); await b.e.sync();
+  b.local.list = async () => { throw new Error('incremental must not list'); };
+  a.write('note.md', 'remote edit'); await a.e.sync();
+  assert.equal((await b.e.sync({ full: false, dirty: [] })).downloaded, 1);
+  assert.equal(b.text('note.md'), 'remote edit');
+  a.local.data.delete('note.md'); await a.e.sync();
+  assert.equal((await b.e.sync({ full: false, dirty: [] })).deleted, 1);
+  b.local.read = async () => { throw new Error('clean tombstone must not be read again'); };
+  await b.e.sync({ full: false, dirty: [] });
+});
+
+test('A5: clean incremental paths keep ancestry until their bytes are observed', async () => {
+  const r = store(), a = client(r, 'remote'), b = client(r, 'external');
+  a.write('note.md', 'base'); await a.e.sync(); await b.e.sync();
+  b.write('note.md', 'external offline edit');
+  a.write('note.md', 'remote interim edit'); await a.e.sync();
+  a.write('note.md', 'base'); await a.e.sync();
+  await b.e.sync({ full: false, dirty: [] });
+  assert.equal((await b.e.sync()).conflicts, 1);
+  assert.deepEqual(sortedContent(b), ['base', 'external offline edit']);
+});
+
+function lateEventScheduler() {
+  const { SyncScheduler } = require('../src/scheduler');
+  return new SyncScheduler({ mobile: true, now: () => 0, setTimeout: () => 0, clearTimeout() {},
+    run: async () => {}, enabled: () => false, active: () => true });
+}
+
+test('A2/A5: an edit during revision publication remains dirty and uploads on the next incremental round', async () => {
+  const r = store(), c = client(r, 'phone'), scheduler = lateEventScheduler();
+  c.write('note.md', 'base');
+  let ticket = scheduler.begin(); scheduler.complete(ticket, await c.e.sync(ticket));
+  c.write('note.md', 'first edit'); scheduler.change(['note.md']);
+  const publish = r.putRevision.bind(r);
+  r.putRevision = async rev => {
+    await publish(rev); r.putRevision = publish;
+    c.write('note.md', 'edit during publication'); scheduler.change(['note.md']);
+  };
+  ticket = scheduler.begin(); assert.equal(ticket.full, false);
+  const first = await c.e.sync(ticket); scheduler.complete(ticket, first);
+  assert.equal(first.uploaded, 1); assert.equal(c.text('note.md'), 'edit during publication');
+  ticket = scheduler.begin(); assert.equal(ticket.full, false); assert.deepEqual(ticket.dirty, ['note.md']);
+  const second = await c.e.sync(ticket); scheduler.complete(ticket, second);
+  assert.equal(second.uploaded, 1); assert.equal(r.revisions.size, 3);
+  const rows = [...r.revisions.values()];
+  assert.deepEqual(rows[2].parents, [rows[1].id]);
+  assert.equal(r.blobs.get(rows[2].blob).toString(), 'edit during publication');
+  assert.deepEqual(scheduler.begin().dirty, []); scheduler.stop();
+});
+
+test('A2/A5: a local edit during incremental download stays dirty and survives as a concurrent version', async () => {
+  const r = store(), a = client(r, 'Mac'), b = client(r, 'phone'), scheduler = lateEventScheduler();
+  a.write('note.md', 'base'); await a.e.sync();
+  let ticket = scheduler.begin(); scheduler.complete(ticket, await b.e.sync(ticket));
+  a.write('note.md', 'remote edit'); await a.e.sync();
+  const get = r.getBlob.bind(r);
+  r.getBlob = async hash => {
+    r.getBlob = get; b.write('note.md', 'edit during download'); scheduler.change(['note.md']); return get(hash);
+  };
+  ticket = scheduler.begin(); assert.equal(ticket.full, false);
+  const first = await b.e.sync(ticket); scheduler.complete(ticket, first);
+  assert.equal(first.deferred, 1); assert.equal(b.text('note.md'), 'edit during download');
+  ticket = scheduler.begin(); assert.equal(ticket.full, false); assert.deepEqual(ticket.dirty, ['note.md']);
+  const second = await b.e.sync(ticket); scheduler.complete(ticket, second);
+  assert.equal(second.uploaded, 1); assert.equal(second.conflicts, 1); assert.equal(r.revisions.size, 3);
+  assert.deepEqual(sortedContent(b), ['edit during download', 'remote edit']); scheduler.stop();
+});

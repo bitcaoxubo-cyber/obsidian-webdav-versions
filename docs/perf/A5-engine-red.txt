@@ -1,0 +1,62 @@
+✔ offline edits survive blind simultaneous writes, converge, and explicitly resolve an edited main (8.261667ms)
+✔ different pre-existing files, equal mtimes, preserve both; aliases can win resolution (1.238792ms)
+✔ binary / empty attachments preserve bytes; deleting one side while editing the other keeps surviving work (2.373834ms)
+✔ lost response after commit reuses original staged bytes and revision across restart (0.841ms)
+✔ pull defers changes written in editor during download, captures them as concurrent work next sync (0.944625ms)
+✔ crash after local CAS before journal acknowledgement does not republish the downloaded revision (0.937083ms)
+✔ missing previously listed history fails closed after restart; corrupt incoming blobs leave local file intact (0.646458ms)
+✔ resolution refuses unpublished sibling edits and rejects unreviewed remote content (0.947042ms)
+✔ equal independent heads are captured together after being displayed as a single file (0.7745ms)
+✔ foreign conflict-like filenames survive without accidental publication (0.179916ms)
+✔ recreate after a witnessed deletion descends from its tombstone; an unseen deletion stays concurrent (1.276125ms)
+✔ unchanged vault uses stat-backed hash hint without reading attachment bodies (0.369417ms)
+✔ remote deletion defers a local edit during local compare-and-set (0.732875ms)
+✔ disk staging keeps binary bodies out of journal JSON, survives offline edits, clears only after acknowledgement (0.569292ms)
+✔ oversized file is rejected before hashing, writing a journal or publishing (0.15225ms)
+✔ A0: sync returns numeric per-round runtime statistics (0.58475ms)
+✔ A2: idle observes each local path once, hash hint=false (0.887375ms)
+✔ A2: idle observes each local path once, hash hint=true (0.953208ms)
+✖ A5: incremental sync never lists or observes unchanged clean paths (0.853041ms)
+✖ A5: a missed external edit waits for the next full round (0.83ms)
+✖ A5: incremental remote changes and tombstones still apply with no scan (0.542792ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 18
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 57.942041
+
+✖ failing tests:
+
+test at test/engine.test.js:252:1
+✖ A5: incremental sync never lists or observes unchanged clean paths (0.853041ms)
+  Error: incremental must not list
+      at c.local.list (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/test/engine.test.js:256:38)
+      at SyncEngine._capture (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/src/engine.js:218:37)
+      at SyncEngine._run (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/src/engine.js:313:16)
+
+test at test/engine.test.js:265:1
+✖ A5: a missed external edit waits for the next full round (0.83ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/test/engine.test.js:268:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/engine.test.js:274:1
+✖ A5: incremental remote changes and tombstones still apply with no scan (0.542792ms)
+  Error: incremental must not list
+      at b.local.list (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/test/engine.test.js:277:38)
+      at SyncEngine._capture (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/src/engine.js:218:37)
+      at SyncEngine._run (/Users/caoxubo/Documents/ChatGPT/Markdown笔记软件/obsidian-webdav-versions-perf/src/engine.js:313:16)

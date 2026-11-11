@@ -215,13 +215,18 @@ class SyncEngine {
   }
 
   async _capture(s, before, result, deferred) {
-    const listed = await this.local.list();
-    const paths = new Set([...listed, ...s.files.keys()]);
+    const listed = this.full ? await this.local.list() : [...this.dirty];
+    const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
+    const readAhead = new Map();
     // Detect file/folder, case and Unicode collisions before publishing new filenames.
     const provisional = [];
     for (const name of listed) {
       checkPhysical(name);
       if (!isConflictPath(name) && !before.files.has(name)) {
+        if (!this.full) {
+          const data = await this._read(name); checkSize(data, name); readAhead.set(name, data);
+          if (data === null) continue;
+        }
         provisional.push(makeRevision({ path: name, parents: [], blob: '0'.repeat(64), device: this.device }));
       }
     }
@@ -229,7 +234,7 @@ class SyncEngine {
     for (const physical of paths) {
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
-      const data = await this._read(physical);
+      const data = readAhead.has(physical) ? readAhead.get(physical) : await this._read(physical);
       checkSize(data, physical);
       const hash = await this._hash(data);
       this.observed.set(physical, hash);
@@ -260,6 +265,8 @@ class SyncEngine {
       const next = nextView.files.get(physical) || null;
       const expected = old?.blob ?? null;
       const wanted = next?.blob ?? null;
+      // No local observation means no new ancestry acknowledgement either.
+      if (!this.full && !this.dirty.has(physical) && expected === wanted) continue;
       const actual = await this._observedHash(physical);
       if (actual === wanted) {
         this._bind(s, physical, next);
@@ -293,6 +300,9 @@ class SyncEngine {
     const started = Date.now();
     this.stats = result.stats;
     this.observed = new Map();
+    this.full = selected !== undefined || options.full !== false || options.deep === true;
+    this.dirty = new Set(options.dirty || []);
+    result.stats.full = Number(this.full);
     this.local.stats = this.state.stats = result.stats;
     if (this.remote.setStats) this.remote.setStats(result.stats);
     else {
@@ -318,7 +328,9 @@ class SyncEngine {
       if (!deferred.has(path)) {
         if (versions.size === 1 && versions.has(null)) {
           // A later local recreation acknowledges only deletions already observed here.
-          if (await this._observedHash(path) === null) s.absent.set(path, versions.get(null));
+          const ids = versions.get(null);
+          if (!this.full && !this.dirty.has(path) && sameIds(s.absent.get(path) || [], ids)) continue;
+          if (await this._observedHash(path) === null) s.absent.set(path, ids);
         } else if (s.files.has(path)) {
           s.absent.delete(path);
         }

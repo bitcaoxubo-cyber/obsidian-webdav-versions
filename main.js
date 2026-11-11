@@ -589,13 +589,18 @@ class SyncEngine {
   }
 
   async _capture(s, before, result, deferred) {
-    const listed = await this.local.list();
-    const paths = new Set([...listed, ...s.files.keys()]);
+    const listed = this.full ? await this.local.list() : [...this.dirty];
+    const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
+    const readAhead = new Map();
     // Detect file/folder, case and Unicode collisions before publishing new filenames.
     const provisional = [];
     for (const name of listed) {
       checkPhysical(name);
       if (!isConflictPath(name) && !before.files.has(name)) {
+        if (!this.full) {
+          const data = await this._read(name); checkSize(data, name); readAhead.set(name, data);
+          if (data === null) continue;
+        }
         provisional.push(makeRevision({ path: name, parents: [], blob: '0'.repeat(64), device: this.device }));
       }
     }
@@ -603,7 +608,7 @@ class SyncEngine {
     for (const physical of paths) {
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
-      const data = await this._read(physical);
+      const data = readAhead.has(physical) ? readAhead.get(physical) : await this._read(physical);
       checkSize(data, physical);
       const hash = await this._hash(data);
       this.observed.set(physical, hash);
@@ -634,6 +639,8 @@ class SyncEngine {
       const next = nextView.files.get(physical) || null;
       const expected = old?.blob ?? null;
       const wanted = next?.blob ?? null;
+      // No local observation means no new ancestry acknowledgement either.
+      if (!this.full && !this.dirty.has(physical) && expected === wanted) continue;
       const actual = await this._observedHash(physical);
       if (actual === wanted) {
         this._bind(s, physical, next);
@@ -667,6 +674,9 @@ class SyncEngine {
     const started = Date.now();
     this.stats = result.stats;
     this.observed = new Map();
+    this.full = selected !== undefined || options.full !== false || options.deep === true;
+    this.dirty = new Set(options.dirty || []);
+    result.stats.full = Number(this.full);
     this.local.stats = this.state.stats = result.stats;
     if (this.remote.setStats) this.remote.setStats(result.stats);
     else {
@@ -692,7 +702,9 @@ class SyncEngine {
       if (!deferred.has(path)) {
         if (versions.size === 1 && versions.has(null)) {
           // A later local recreation acknowledges only deletions already observed here.
-          if (await this._observedHash(path) === null) s.absent.set(path, versions.get(null));
+          const ids = versions.get(null);
+          if (!this.full && !this.dirty.has(path) && sameIds(s.absent.get(path) || [], ids)) continue;
+          if (await this._observedHash(path) === null) s.absent.set(path, ids);
         } else if (s.files.has(path)) {
           s.absent.delete(path);
         }
@@ -1516,6 +1528,7 @@ const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platf
 const { text } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
+const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
@@ -1570,7 +1583,7 @@ class SyncSettings extends PluginSettingTab {
       .addComponent(container => new SecretComponent(this.app, container).setValue(draft.secret).onChange(v => { draft.secret = v; }));
     new Setting(el).setName('设备名称').setDesc('用于辨认冲突副本，例如 iPhone、MacBook 或 Mac mini。')
       .addText(t => t.setValue(draft.device).onChange(v => { draft.device = v.trim(); }));
-    new Setting(el).setName('自动同步').setDesc('在前台打开笔记库后、文件变更约 5 秒后，以及每隔 60 秒同步。首次配置先手动同步，手机请等到已同步再离开。')
+    new Setting(el).setName('自动同步').setDesc('首次与回到前台时全量同步；文件变更后手机等待 15 秒、桌面等待 5 秒。空闲轮询从 60 秒逐步延长至 300 秒，每 10 分钟全量检查。首次配置先手动同步，手机请等到已同步再离开。')
       .addToggle(t => t.setValue(draft.auto).onChange(v => { draft.auto = v; }));
     new Setting(el).addButton(b => b.setButtonText('测试连接').onClick(async () => {
       try { await p.remoteFor(draft).probe(); new Notice('已确认可读取 WebDAV 文件夹'); }
@@ -1588,6 +1601,9 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.settings = Object.assign({}, defaults, await this.loadData());
     this.stopped = false;
     this.ready = false;
+    this.scheduler = new SyncScheduler({ mobile: Platform.isMobile,
+      setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: timer => window.clearTimeout(timer),
+      run: () => this.autoSync(), enabled: () => this.ready && this.settings.auto && !this.stopped, active: () => this.isActive() });
     this.status = this.addStatusBarItem();
     this.showStatus('就绪');
     this.status.addEventListener('click', () => this.run('sync', true));
@@ -1606,16 +1622,17 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
 
     for (const event of ['create', 'modify', 'rename', 'delete']) {
       this.registerEvent(this.app.vault.on(event, (file, previous) => {
-        if (this.visible(file.path) || (previous && this.visible(previous))) this.schedule();
+        const paths = [file.path, ...(event === 'rename' && previous ? [previous] : [])].filter(path => this.visible(path));
+        // A folder rename may have no per-file events; rescan its descendants.
+        if (paths.length) this.scheduler.change(Array.isArray(file.children) ? [] : paths, { full: Array.isArray(file.children) });
       }));
     }
-    this.registerDomEvent(window, 'online', () => this.schedule(1000));
+    this.registerDomEvent(window, 'online', () => { this.scheduler.resetPoll(); this.schedule(1000); });
     this.registerDomEvent(document, 'visibilitychange', () => {
-      if (this.isActive()) this.schedule(1000);
-      else window.clearTimeout(this.timer);
+      if (document.visibilityState !== 'hidden' && this.isActive()) this.scheduler.foreground();
+      else if (Platform.isMobile) this.scheduler.pause();
     });
-    this.registerInterval(window.setInterval(() => this.autoSync(), 60_000));
-    this.app.workspace.onLayoutReady(() => { this.ready = true; this.schedule(1200); });
+    this.app.workspace.onLayoutReady(() => { this.ready = true; this.scheduler.resetPoll(); this.schedule(1200); });
   }
   visible(name) {
     const parts = name.split('/');
@@ -1639,6 +1656,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       this.result = null;
       this.lastError = '';
       this.showStatus('就绪');
+      this.scheduler.reset();
       this.schedule();
     } finally { this.configuring = false; }
   }
@@ -1670,11 +1688,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.engine = new SyncEngine({ remote, local, state, device: s.device });
     return this.engine;
   }
-  schedule(delay = 5000) {
-    window.clearTimeout(this.timer);
-    if (this.ready && this.settings.auto && !this.stopped) this.timer = window.setTimeout(() => this.autoSync(), delay);
-  }
-  autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) void this.run('sync', false); }
+  schedule(delay) { this.scheduler.schedule(delay); }
+  autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) return this.run('sync', false); }
   isActive() { return !this.stopped && (!Platform.isMobile || document.visibilityState !== 'hidden'); }
   openStatus() {
     const modal = new Modal(this.app);
@@ -1689,6 +1704,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       const s = this.result.stats;
       modal.contentEl.createEl('p', { text: `${s.full ? '全量' : '增量'}同步：耗时 ${s.durationMs} 毫秒，读取库内文件 ${s.vaultReads} 次，内容及状态哈希 ${s.hashBytes} 字节，HTTP 请求 ${s.httpRequests} 次。` });
     }
+    modal.contentEl.createEl('p', { text: `当前轮询间隔：${this.scheduler.pollIntervalMs / 1000} 秒。` });
     new Setting(modal.contentEl).addButton(b => b.setButtonText('立即同步').onClick(async () => { modal.close(); await this.run('sync', true); this.openStatus(); }));
     modal.open();
   }
@@ -1704,6 +1720,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     if (lock.has(key)) { if (notify) new Notice('正在同步，请等待完成'); return; }
     lock.add(key);
     this.busy = true;
+    const ticket = this.scheduler.begin({ manual: notify, deep: mode === 'deep', resolve: mode === 'resolve' });
     try {
       this.showStatus('同步中');
       if (this.app.plugins?.enabledPlugins?.has('obsidian-sync-webdav')) throw new Error('请先停用旧版 WebDAV Sync，再运行版本同步。');
@@ -1711,13 +1728,16 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: true, deep: mode === 'deep' });
+      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
+      this.scheduler.complete(ticket, r);
+      if (r.stats) r.stats.pollIntervalMs = this.scheduler.pollIntervalMs;
       this.result = r;
       this.lastError = '';
       const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
       if (!this.stopped) this.showStatus(message);
       if (notify && !this.stopped) new Notice(message);
     } catch (err) {
+      this.scheduler.fail(ticket);
       if (this.stopped) return;
       const message = String(err.message || err);
       if (notify || this.lastError !== message) new Notice('WebDAV：' + message, 10000);
@@ -1727,7 +1747,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   onunload() {
     this.stopped = true;
-    window.clearTimeout(this.timer);
+    this.scheduler.stop();
   }
 };
 
@@ -1902,6 +1922,93 @@ function project(revisions, index = indexRevisions(revisions)) {
 }
 
 module.exports = { indexRevisions, makeRevision, validateRevision, digest, project, headsFor, safePath, isConflictPath };
+
+},
+"scheduler":function(module,exports,require){
+'use strict';
+const BASE_POLL = 60_000, MAX_POLL = 300_000, FULL_INTERVAL = 600_000;
+
+// Scheduling and dirty generations are separate from the sync engine. An event
+// arriving after begin() must remain queued even when it names the same file.
+class SyncScheduler {
+  constructor({ mobile, now = () => Date.now(), setTimeout, clearTimeout, run, enabled, active }) {
+    this.now = now; this.setTimeout = setTimeout; this.clearTimeout = clearTimeout;
+    this.retryAt = null;
+    this.run = run; this.enabled = enabled; this.active = active;
+    this.debounceMs = mobile ? 15_000 : 5_000;
+    this.pollIntervalMs = BASE_POLL;
+    this.dirty = new Map(); this.generation = 0; this.activity = 0;
+    this.fullRequested = 1; this.fullCompleted = 0; this.lastFullAt = null;
+    this.running = false; this.stopped = false;
+  }
+  allowed() { return !this.stopped && this.enabled() && this.active(); }
+  pause() {
+    this.clearTimeout(this.changeTimer); this.clearTimeout(this.pollTimer);
+    this.changeTimer = null; this.pollTimer = null;
+  }
+  stop() { this.stopped = true; this.pause(); }
+  reset() {
+    this.pause(); this.fullRequested++; this.lastFullAt = null;
+    this.pollIntervalMs = BASE_POLL; this.activity++;
+  }
+  resetPoll() { this.retryAt = null; this.pollIntervalMs = BASE_POLL; this.armPoll(); }
+  change(paths, { full = false } = {}) {
+    if (full) this.fullRequested++;
+    for (const path of paths) this.dirty.set(path, ++this.generation);
+    this.activity++; this.resetPoll(); this.schedule();
+  }
+  foreground() {
+    this.fullRequested++; this.activity++; this.resetPoll(); this.schedule(1000);
+  }
+  schedule(delay = this.debounceMs) {
+    this.clearTimeout(this.changeTimer); this.changeTimer = null;
+    this.dirtyDeadline = this.now() + delay;
+    if (!this.allowed() || this.running) return;
+    this.changeTimer = this.setTimeout(async () => {
+      this.changeTimer = null;
+      await this.dispatch();
+    }, delay);
+  }
+  armPoll() {
+    this.clearTimeout(this.pollTimer); this.pollTimer = null;
+    if (!this.allowed() || this.running) return;
+    const untilFull = this.lastFullAt === null ? this.pollIntervalMs : Math.max(0, this.lastFullAt + FULL_INTERVAL - this.now());
+    const delay = Math.max(1000, Math.min(this.pollIntervalMs, untilFull), (this.retryAt ?? this.now()) - this.now());
+    this.pollTimer = this.setTimeout(async () => {
+      this.pollTimer = null;
+      await this.dispatch();
+    }, delay);
+  }
+  async dispatch() {
+    if (!this.allowed()) return;
+    try { await this.run(); }
+    finally { if (!this.running) this.armPoll(); }
+  }
+  begin({ manual = false, deep = false, resolve = false } = {}) {
+    this.pause(); this.running = true; this.retryAt = null;
+    return { full: manual || deep || resolve || this.lastFullAt === null || this.fullRequested > this.fullCompleted || this.now() - this.lastFullAt >= FULL_INTERVAL,
+      dirty: [...this.dirty.keys()], deep, entries: new Map(this.dirty), fullRequested: this.fullRequested, activity: this.activity };
+  }
+  complete(ticket, result) {
+    const deferred = new Set(result.deferredPaths || []);
+    for (const [path, generation] of ticket.entries) {
+      if (!deferred.has(path) && this.dirty.get(path) === generation) this.dirty.delete(path);
+    }
+    for (const path of deferred) if (!this.dirty.has(path)) this.dirty.set(path, ++this.generation);
+    if (ticket.full) { this.lastFullAt = this.now(); this.fullCompleted = Math.max(this.fullCompleted, ticket.fullRequested); }
+    const newerActivity = this.activity !== ticket.activity;
+    this.pollIntervalMs = result.uploaded || result.downloaded || result.deleted || newerActivity ? BASE_POLL : Math.min(MAX_POLL, this.pollIntervalMs * 2);
+    this.running = false;
+    this.armPoll();
+    if (this.fullRequested > this.fullCompleted) this.schedule(1000);
+    else if (this.dirty.size) this.schedule(newerActivity ? Math.max(0, (this.dirtyDeadline ?? this.now() + this.debounceMs) - this.now()) : this.debounceMs);
+  }
+  fail() {
+    this.running = false; this.fullRequested++; this.pollIntervalMs = BASE_POLL; this.retryAt = this.now() + BASE_POLL;
+    this.pause(); this.armPoll();
+  }
+}
+module.exports = { SyncScheduler };
 
 },
 "sharded":function(module,exports,require){
