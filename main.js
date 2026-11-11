@@ -229,6 +229,9 @@ class DavRemote {
     this.auth = username || password ? 'Basic ' + base64(username + ':' + password) : '';
     this.revisions = new Map();
     this.verifiedBlobs = new Set();
+    this.objectInventory = null; // null means no complete directory inventory yet.
+    this.confirmedPuts = new Set();
+    this.uncertainPuts = new Set();
     this.created = false;
   }
 
@@ -295,15 +298,41 @@ class DavRemote {
     if (r.status !== 200) throw httpError('GET', r.status);
     return r.body;
   }
+  rememberObjects(urls) {
+    this.objectInventory = new Set(urls);
+    for (const key of this.confirmedPuts) {
+      if (!this.objectInventory.has(key)) this.confirmedPuts.delete(key);
+    }
+  }
+  addressedObject(url) {
+    const match = /\/([a-f0-9]{64})\.(blob|json)$/.exec(url.pathname);
+    return !!match && this.objectURL(match[1], '.' + match[2]).href === url.href;
+  }
   async immutable(url, data, type, limit, verify) {
     await this.ensureFolder();
-    const previous = await this.read(url, limit, true);
-    if (previous !== null) { await verify(previous); return; }
+    const addressed = this.addressedObject(url), key = url.href;
+    const confirm = () => {
+      if (!addressed) return;
+      this.confirmedPuts.add(key);
+      this.objectInventory?.add(key);
+      this.uncertainPuts.delete(key);
+    };
+    // A successful verified put can be reused during this session (B4 preupload).
+    // Marker files are not content-addressed and retain the original read path.
+    if (addressed && this.confirmedPuts.has(key)) return;
+    if (!addressed || this.objectInventory === null || this.objectInventory.has(key) || this.uncertainPuts.has(key)) {
+      const previous = await this.read(url, limit, true);
+      if (previous !== null) { await verify(previous); confirm(); return; }
+    }
+    // Lost responses leave uncertain outcomes: probe before retrying even if
+    // the last inventory preceded this attempt.
+    if (addressed) this.uncertainPuts.add(key);
     const r = await this.call('PUT', url, { 'If-None-Match': '*', 'Content-Type': type }, data, REV_LIMIT);
     if (![200, 201, 204, 412].includes(r.status)) throw httpError('PUT', r.status);
     // Even 412 can be another honest client writing the same hash. A weak DAV
     // can ignore the precondition. All honest writers use the same content ID.
     await verify(await this.read(url, limit));
+    confirm();
   }
   async getBlob(id) {
     const bytes = await this.read(this.objectURL(id, '.blob'), BLOB_LIMIT);
@@ -337,6 +366,7 @@ class DavRemote {
     if (listing === null) {
       if (this.revisions.size || this.created) throw new Error('远端版本目录消失；已停止同步。');
       await this.probe(); // do not mistake an incorrect URL/inaccessible parent for an empty store
+      this.rememberObjects([]);
       return [];
     }
     this.created = true;
@@ -347,6 +377,7 @@ class DavRemote {
       if (collection || !match) throw new Error('专用 WebDAV 版本目录内存在未知条目；已停止同步。');
       if (match[2] === 'json') ids.push(match[1]);
     }
+    this.rememberObjects([...listing.keys()].map(name => new URL(name, this.folder).href));
     for (const id of this.revisions.keys()) {
       if (!listing.has(id + '.json')) throw new Error('远端缺少以前确认的版本；已停止同步。');
     }
@@ -2088,6 +2119,7 @@ class ShardedStore extends DavRemote {
       }
       this.buckets.add(bucket);
     });
+    this.rememberObjects([...objects.values()].map(url => url.href));
     return objects;
   }
   async listRevisions() {

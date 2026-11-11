@@ -1,0 +1,81 @@
+✔ two independent desktop clients append divergent histories on weak DAV and read verified bytes (23.5195ms)
+✔ server truncation, wrong GET bytes, missing blob, and successful-looking bad PUT stop sync (5.637125ms)
+✔ 412 is idempotent only when the readback verifies; interrupted writes can be retried (4.788333ms)
+✔ Depth:1 fails closed on truncated XML, wrong namespace, cross-origin paths and partial statuses (3.956125ms)
+✔ credentials stay on the original HTTPS endpoint, failures disclose no response or password (1.790833ms)
+✔ real filesystem vaults keep concurrent Markdown and PDF byte-for-byte through restart, new device, and resolution (1553.474542ms)
+✔ acceptance receipts attest each check without exposing settings and reject stale, mismatched or malformed records (1533.934375ms)
+✖ B2: complete inventory skips existence GETs but preserves readback and known-object verification (4.784417ms)
+✖ B2: stale empty inventories converge when two clients PUT the same object concurrently (3.8255ms)
+✖ B2: lost PUT response after inventory is probed on retry and later inventory invalidates removed preuploads (3.596333ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 7
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3178.44275
+
+✖ failing tests:
+
+test at test/dav.test.js:301:1
+✖ B2: complete inventory skips existence GETs but preserves readback and known-object verification (4.784417ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   'GET',
+      'PUT',
+      'GET'
+    ]
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/dav.test.js:306:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'GET', 'PUT', 'GET' ],
+    expected: [ 'PUT', 'GET' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/dav.test.js:321:1
+✖ B2: stale empty inventories converge when two clients PUT the same object concurrently (3.8255ms)
+  AssertionError [ERR_ASSERTION]: each successful or 412 PUT has its own verified readback
+  
+  4 !== 2
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/dav.test.js:334:12)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/dav.test.js:339:1
+✖ B2: lost PUT response after inventory is probed on retry and later inventory invalidates removed preuploads (3.596333ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   'GET',
+      'PUT',
+      'GET'
+    ]
+  
+      at TestContext.<anonymous> (/private/tmp/obsidian-perf-remote/test/dav.test.js:352:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'GET', 'PUT', 'GET' ],
+    expected: [ 'PUT', 'GET' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

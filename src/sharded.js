@@ -74,6 +74,7 @@ class ShardedStore extends DavRemote {
       }
       this.buckets.add(bucket);
     });
+    this.rememberObjects([...objects.values()].map(url => url.href));
     return objects;
   }
   async listRevisions() {

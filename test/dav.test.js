@@ -297,3 +297,58 @@ test('acceptance receipts attest each check without exposing settings and reject
   await fs.writeFile(receiptFile, JSON.stringify({ ...passed, extraPayload: 'unexpected' }));
   assert.equal(await readAcceptanceReceipt(f.url, receiptFile), null);
 });
+
+test('B2: complete inventory skips existence GETs but preserves readback and known-object verification', async t => {
+  const f = await server(t); f.dirs.add(store); const client = f.remote();
+  await client.listRevisions();
+  const body = Buffer.from('B2 new object'), id = digest(body); f.calls.length = 0;
+  await client.putBlob(id, body);
+  assert.deepEqual(f.calls.map(c => c.method), ['PUT', 'GET']);
+  assert.equal(f.calls[0].condition, '*');
+  const revision = note(id, 'B2'); f.calls.length = 0;
+  await client.putRevision(revision);
+  assert.deepEqual(f.calls.map(c => c.method), ['PUT', 'GET']);
+  const reader = f.remote(); await reader.listRevisions(); f.calls.length = 0;
+  await reader.putBlob(id, body);
+  assert.deepEqual(f.calls.map(c => c.method), ['GET']);
+  // An already verified successful put can be reused by B4 preupload/commit.
+  f.calls.length = 0; await client.putBlob(id, body);
+  assert.equal(f.calls.length, 0);
+  await assert.rejects(client.putBlob(id, Buffer.from('wrong input')), /不符/);
+  assert.equal(f.calls.length, 0, 'cached publication never bypasses input SHA-256');
+});
+
+test('B2: stale empty inventories converge when two clients PUT the same object concurrently', async t => {
+  for (const conditional of [false, true]) {
+    const f = await server(t, { intercept({ method, path, data, entries, send }) {
+      if (!conditional || method !== 'PUT') return false;
+      if (entries.has(path)) send(412);
+      else { entries.set(path, data); send(201); }
+      return true;
+    } });
+    f.dirs.add(store); const a = f.remote(), b = f.remote();
+    await Promise.all([a.listRevisions(), b.listRevisions()]);
+    const data = Buffer.from('same concurrently addressed bytes'), id = digest(data); f.calls.length = 0;
+    await Promise.all([a.putBlob(id, data), b.putBlob(id, data)]);
+    assert.equal(f.calls.filter(c => c.method === 'PUT').length, 2);
+    assert.equal(f.calls.filter(c => c.method === 'GET').length, 2, 'each successful or 412 PUT has its own verified readback');
+    assert.deepEqual(await a.getBlob(id), data); assert.deepEqual(await b.getBlob(id), data);
+  }
+});
+
+test('B2: lost PUT response after inventory is probed on retry and later inventory invalidates removed preuploads', async t => {
+  let interrupted = false;
+  const f = await server(t, { intercept({ method, path, data, req, entries }) {
+    if (method !== 'PUT' || interrupted) return false;
+    interrupted = true; entries.set(path, data); req.socket.destroy(); return true;
+  } });
+  f.dirs.add(store); const client = f.remote(); await client.listRevisions();
+  const data = Buffer.from('unreferenced preupload'), id = digest(data);
+  await assert.rejects(client.putBlob(id, data), /传输失败/);
+  await client.putBlob(id, data);
+  assert.equal(f.calls.filter(c => c.method === 'PUT').length, 1);
+  f.entries.delete(store + id + '.blob'); await client.listRevisions(); f.calls.length = 0;
+  await client.putBlob(id, data);
+  assert.deepEqual(f.calls.map(c => c.method), ['PUT', 'GET']);
+  assert.deepEqual(f.entries.get(store + id + '.blob'), data);
+});
