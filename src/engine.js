@@ -581,6 +581,22 @@ class SyncEngine {
     if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
   }
 
+  async _restoreStaged(s, tx) {
+    const pending = s.pending, next = pending?.next;
+    const base = s.files.get(tx.name);
+    // Recreate only a downloaded payload authorized by the exact unfinished
+    // apply journal, its old binding and checksum-validated remote revisions.
+    if (pending?.kind !== 'apply' || pending.physical !== tx.name || !next ||
+        next.blob !== tx.next || (base?.blob ?? null) !== tx.expected ||
+        (base && base.path !== next.path) || s.completedOperations.has(pending.operationId) ||
+        !Array.isArray(next.parents) || !next.parents.length || !next.parents.every(id => {
+          const rev = s.revs.get(id);
+          return rev && rev.path === next.path && rev.blob === tx.next;
+        })) throw new Error('手机暂存记录与同步日志不一致；已停止自动恢复，请保留 local-state。');
+    checkPhysical(tx.name); safePath(next.path);
+    return this.remote.getBlob(tx.next);
+  }
+
   async _runOnce(selected, options = {}) {
     const result = counts();
     const started = Date.now();
@@ -596,8 +612,14 @@ class SyncEngine {
       if (this.remote.request) this.remote.request.stats = result.stats;
     }
     await this.local.beginRound?.({ deep: options.deep === true });
-    await this.local.recover?.();
-    const s = await this._open();
+    let s;
+    await this.local.recover?.(async tx => {
+      // Ordinary local crash recovery still works offline. Only a genuinely
+      // missing staged payload needs the remote history and a fresh blob GET.
+      s ||= await this._open();
+      return this._restoreStaged(s, tx);
+    });
+    s ||= await this._open();
     await this._recover(s, result);
     // Finish an old embedded intent through its original durable snapshot path
     // before subsequent operations start using the independent pending file.

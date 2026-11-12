@@ -1,5 +1,11 @@
 # 飞牛 WebDAV 版本同步 · Mac / iPhone
 
+**0.4.0-beta.3：补齐缺失的手机暂存载荷。恢复逻辑已通过自动测试，尚未在报错 iPhone 上验收。**
+
+保留手机的笔记、设置和 `local-state/`。更新只替换 `main.js`、`manifest.json`，保持前台后手动同步。只有临时文件确实缺失，且原同步日志、旧文件基线和远端修订一致时，才重新下载并校验相同内容；损坏或不一致记录继续保留并报错。详见 [本版修复说明](docs/RELEASE.md)。
+
+可沿用现有设置及同步状态，Mac 可继续使用兼容版本。
+
 Mac 与 iPhone 各自打开本地 Obsidian 库，通过飞牛现有 HTTPS WebDAV 交换笔记和附件，同时修改会保留双方版本。GitHub 仅分发插件，整个安装及同步流程不依赖 iCloud。需要 Obsidian 1.11.4 或更高版本。
 
 **0.4.0-beta.2 修复手机接收删除或移动后留下旧空文件夹的问题。移动端仍为测试版，新的空目录清理行为尚未完成 iPhone 真机验收。**
@@ -19,7 +25,7 @@ Mac 与 iPhone 各自打开本地 Obsidian 库，通过飞牛现有 HTTPS WebDAV
 
 1. 在 Obsidian 创建空白库，关闭 Store in iCloud，存放于“我的 iPhone → Obsidian”。
 2. 在第三方插件市场安装并启用 BRAT。
-3. 在 BRAT 添加 `bitcaoxubo-cyber/obsidian-webdav-versions`，选择固定 Release 版本 `0.4.0-beta.2`；验收期间不要自动跟随最新版本。
+3. 在 BRAT 添加 `bitcaoxubo-cyber/obsidian-webdav-versions`，选择固定 Release 版本 `0.4.0-beta.3`；验收期间不要自动跟随最新版本。
 4. 启用“WebDAV Versions · 飞牛同步”，按 [iPhone 安装与验收](docs/iPhone安装与验收.md) 配置独立的测试 WebDAV 子目录。
 
 首次移动端验收包括 Mac↔iPhone 双向同步、离线冲突、后台中断恢复和大附件。通过后，再建立手机正式空白本地库接入原有目录。已安装 `0.4.0-beta.1` 的手机更新时保留设置及 `local-state/`，不需要重建笔记库；更新后保持前台，手动运行一次“立即同步”检查旧版残留目录。
