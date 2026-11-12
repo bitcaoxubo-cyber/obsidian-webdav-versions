@@ -454,7 +454,7 @@ class MobileVault extends AdapterIO {
     await this.adapter.rename(this.transaction, done);
     await this.adapter.rmdir(done, true);
   }
-  async recover() {
+  async recover(restoreStaged) {
     this.checkActive();
     if (!await this.adapter.exists(this.transaction)) return;
     const meta = await super.read(this.transaction + '/intent.json');
@@ -475,7 +475,29 @@ class MobileVault extends AdapterIO {
     // With no moved original, an interrupted update was never applied. Keep any
     // user deletion or new contents. For a new file, exclusive copy is safe.
     if (actual === null && (previous !== null || tx.expected === null) && tx.next !== null) {
-      const staged = await super.read(this.transaction + '/next');
+      const stagePath = this.transaction + '/next';
+      let staged;
+      try { staged = await super.read(stagePath); }
+      catch (error) {
+        // Some native missing-file errors have localized messages and no ENOENT.
+        // Only the private transaction listing may establish absence here; never
+        // reinterpret a vault read or a present-but-unreadable file as deletion.
+        const listing = await this.adapter.list(this.transaction);
+        if (listing.files.includes(stagePath) || listing.folders.includes(stagePath)) throw error;
+        staged = null;
+      }
+      if (staged === null && restoreStaged) {
+        this.checkActive();
+        const value = await restoreStaged({ name: tx.name, expected: tx.expected, next: tx.next });
+        this.checkActive();
+        if (value === null || bytes(value).length > MOBILE_LIMIT || await this.hashOf(value) !== tx.next) {
+          throw new Error('远端待恢复内容校验失败；已保留本地恢复记录。');
+        }
+        const current = await super.read(this.transaction + '/intent.json');
+        if (current === null || text(current) !== text(meta)) throw new Error('本地恢复记录已变化；已停止恢复。');
+        await this.writeFresh(stagePath, value);
+        staged = value;
+      }
       if (await this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
       const slash = tx.name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(tx.name.slice(0, slash));
       if (this.guard(tx.name, previous)) await this.copyAbsent(this.transaction + '/next', tx.name);

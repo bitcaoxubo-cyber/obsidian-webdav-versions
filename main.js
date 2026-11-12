@@ -1027,6 +1027,22 @@ class SyncEngine {
     if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
   }
 
+  async _restoreStaged(s, tx) {
+    const pending = s.pending, next = pending?.next;
+    const base = s.files.get(tx.name);
+    // Recreate only a downloaded payload authorized by the exact unfinished
+    // apply journal, its old binding and checksum-validated remote revisions.
+    if (pending?.kind !== 'apply' || pending.physical !== tx.name || !next ||
+        next.blob !== tx.next || (base?.blob ?? null) !== tx.expected ||
+        (base && base.path !== next.path) || s.completedOperations.has(pending.operationId) ||
+        !Array.isArray(next.parents) || !next.parents.length || !next.parents.every(id => {
+          const rev = s.revs.get(id);
+          return rev && rev.path === next.path && rev.blob === tx.next;
+        })) throw new Error('手机暂存记录与同步日志不一致；已停止自动恢复，请保留 local-state。');
+    checkPhysical(tx.name); safePath(next.path);
+    return this.remote.getBlob(tx.next);
+  }
+
   async _runOnce(selected, options = {}) {
     const result = counts();
     const started = Date.now();
@@ -1042,8 +1058,14 @@ class SyncEngine {
       if (this.remote.request) this.remote.request.stats = result.stats;
     }
     await this.local.beginRound?.({ deep: options.deep === true });
-    await this.local.recover?.();
-    const s = await this._open();
+    let s;
+    await this.local.recover?.(async tx => {
+      // Ordinary local crash recovery still works offline. Only a genuinely
+      // missing staged payload needs the remote history and a fresh blob GET.
+      s ||= await this._open();
+      return this._restoreStaged(s, tx);
+    });
+    s ||= await this._open();
     await this._recover(s, result);
     // Finish an old embedded intent through its original durable snapshot path
     // before subsequent operations start using the independent pending file.
@@ -2066,7 +2088,7 @@ class MobileVault extends AdapterIO {
     await this.adapter.rename(this.transaction, done);
     await this.adapter.rmdir(done, true);
   }
-  async recover() {
+  async recover(restoreStaged) {
     this.checkActive();
     if (!await this.adapter.exists(this.transaction)) return;
     const meta = await super.read(this.transaction + '/intent.json');
@@ -2087,7 +2109,29 @@ class MobileVault extends AdapterIO {
     // With no moved original, an interrupted update was never applied. Keep any
     // user deletion or new contents. For a new file, exclusive copy is safe.
     if (actual === null && (previous !== null || tx.expected === null) && tx.next !== null) {
-      const staged = await super.read(this.transaction + '/next');
+      const stagePath = this.transaction + '/next';
+      let staged;
+      try { staged = await super.read(stagePath); }
+      catch (error) {
+        // Some native missing-file errors have localized messages and no ENOENT.
+        // Only the private transaction listing may establish absence here; never
+        // reinterpret a vault read or a present-but-unreadable file as deletion.
+        const listing = await this.adapter.list(this.transaction);
+        if (listing.files.includes(stagePath) || listing.folders.includes(stagePath)) throw error;
+        staged = null;
+      }
+      if (staged === null && restoreStaged) {
+        this.checkActive();
+        const value = await restoreStaged({ name: tx.name, expected: tx.expected, next: tx.next });
+        this.checkActive();
+        if (value === null || bytes(value).length > MOBILE_LIMIT || await this.hashOf(value) !== tx.next) {
+          throw new Error('远端待恢复内容校验失败；已保留本地恢复记录。');
+        }
+        const current = await super.read(this.transaction + '/intent.json');
+        if (current === null || text(current) !== text(meta)) throw new Error('本地恢复记录已变化；已停止恢复。');
+        await this.writeFresh(stagePath, value);
+        staged = value;
+      }
       if (await this.hashOf(staged) !== tx.next) throw new Error('本地待恢复内容校验失败。');
       const slash = tx.name.lastIndexOf('/'); if (slash >= 0) await this.mkdir(tx.name.slice(0, slash));
       if (this.guard(tx.name, previous)) await this.copyAbsent(this.transaction + '/next', tx.name);
