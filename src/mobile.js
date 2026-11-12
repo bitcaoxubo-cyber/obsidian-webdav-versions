@@ -406,6 +406,48 @@ class MobileVault extends AdapterIO {
     };
     await visit(''); return files;
   }
+  async pruneEmptyDirectories(directories) {
+    const ordered = [...new Set(directories)];
+    for (const dir of ordered) this.path(dir); // Never accept root, hidden or configuration paths.
+    ordered.sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+    const forget = dir => {
+      for (const cached of this.confirmedDirectories) {
+        if (cached === dir || cached.startsWith(dir + '/')) this.confirmedDirectories.delete(cached);
+      }
+    };
+    const isFolder = async dir => {
+      // A former ancestor may now be a file, or may already have disappeared.
+      let prefix = '';
+      for (const part of dir.split('/')) {
+        prefix = prefix ? prefix + '/' + part : part;
+        if ((await this.adapter.stat(prefix))?.type !== 'folder') { forget(prefix); return false; }
+      }
+      return true;
+    };
+    let removed = 0;
+    for (const dir of ordered) {
+      this.checkActive();
+      try {
+        if (!await isFolder(dir)) { forget(dir); continue; }
+        const children = await this.adapter.list(dir);
+        // Hidden files and unrelated empty child folders also prevent removal.
+        if (children.files.length || children.folders.length) continue;
+        // Native removal may succeed before a lost response or background pause.
+        // Drop mkdir hints before attempting it, including on that failure path.
+        forget(dir);
+        this.checkActive();
+        await this.adapter.rmdir(dir, false); // Atomic empty-only removal protects a newly created child.
+        removed++;
+      } catch (error) {
+        this.checkActive();
+        if (!await isFolder(dir)) { forget(dir); continue; }
+        const children = await this.adapter.list(dir);
+        if (children.files.length || children.folders.length) continue;
+        throw new Error('文件同步已保存，空目录清理未完成，请重试：' + dir);
+      }
+    }
+    return removed;
+  }
   async finish() {
     if (!await this.adapter.exists(this.transaction)) return;
     const done = this.transaction + '-done-' + randomUUID();

@@ -59,6 +59,16 @@ test('built plugin loads and completes native-API sync without Node, Buffer, pro
   a.p.openStatus();
   assert.ok(panels.some(t=>t.includes('读取库内文件') && t.includes(String(a.p.result.stats.vaultReads))));
   assert.equal(a.p.saved.secret,'local'); assert.equal(Object.values(a.p.saved).includes('test:test'),false);
+  a.adapter.folders.add('旧目录'); a.adapter.put('旧目录/已删除.md','old');
+  await a.p.run('sync',true); await b.p.run('sync',true);
+  assert.equal(b.adapter.folders.has('旧目录'),true);
+  await a.adapter.remove('旧目录/已删除.md');
+  await a.p.run('sync',true); await b.p.run('sync',true);
+  assert.equal(b.p.lastError,'');
+  assert.equal(b.adapter.folders.has('旧目录'),false);
+  assert.equal(b.p.result.cleanedDirectories,1);
+  b.p.openStatus();
+  assert.ok(panels.includes('已清理空文件夹 1 个。'));
   assert.equal(nativeCalls.some(n=>n.startsWith('node:')),false);
   assert.ok(nativeCalls.every(n=>n==='obsidian'||n==='stream')); // SAX's optional stream support is caught.
   const count=dav.objects.size; document.visibilityState='hidden'; a.adapter.put('测试.md','offline'); await a.p.run('sync',true);
