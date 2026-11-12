@@ -22,7 +22,16 @@ class Adapter {
     await this.hook('rename',a,'after');
   }
   async copy(a,b) { await this.hook('copy',b,'before'); if(await this.exists(b)) throw new Error('exists'); this.files.set(b,this.files.get(a).slice()); this.touch(b); await this.hook('copy',b,'after'); }
-  async rmdir(p) { for(const f of [...this.files.keys()]) if(f.startsWith(p+'/')) { this.files.delete(f); this.mtimes.delete(f); } for(const f of [...this.folders]) if(f===p||f.startsWith(p+'/')) this.folders.delete(f); }
+  async rmdir(p, recursive) {
+    await this.hook('rmdir',p,'before');
+    if (!this.folders.has(p)) throw Object.assign(new Error('missing directory'), { code: 'ENOENT' });
+    if (!recursive && [...this.files.keys(), ...this.folders].some(f=>f.startsWith(p+'/'))) {
+      throw Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' });
+    }
+    for(const f of [...this.files.keys()]) if(f.startsWith(p+'/')) { this.files.delete(f); this.mtimes.delete(f); }
+    for(const f of [...this.folders]) if(f===p||f.startsWith(p+'/')) this.folders.delete(f);
+    await this.hook('rmdir',p,'after');
+  }
   async list(p) {
     const immediate = n => n!==p && n.startsWith(p?p+'/':'') && !n.slice(p?p.length+1:0).includes('/');
     return {files:[...this.files.keys()].filter(immediate), folders:[...this.folders].filter(immediate)};

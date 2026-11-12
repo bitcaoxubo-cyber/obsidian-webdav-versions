@@ -176,6 +176,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     if (this.result) {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
+      if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
     }
     if (this.result?.stats) {
       const s = this.result.stats;

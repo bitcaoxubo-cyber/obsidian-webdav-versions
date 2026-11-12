@@ -8,7 +8,7 @@ const { parallel } = require('./sharded');
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
-const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, deferred: 0,
+const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, cleanedDirectories: 0, conflicts: 0, deferred: 0,
   conflictPaths: [], deferredPaths: [],
   stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
 
@@ -203,7 +203,8 @@ class SyncEngine {
       reviewed: new Map(disk?.reviewed), absent: new Map(disk?.absent), pending: embedded || independent,
       revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
       changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
-      receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false };
+      receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false,
+      cleanupPaths: new Set() };
     s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
@@ -251,6 +252,7 @@ class SyncEngine {
     if (ids) {
       if (sameIds(s.absent.get(path) || [], ids)) return;
       s.absent.set(path, ids);
+      s.cleanupPaths.add(path);
     } else if (!s.absent.delete(path)) return;
     s.changed = true;
   }
@@ -557,6 +559,28 @@ class SyncEngine {
     finally { this.remote.clearBlobPreflights?.(); }
   }
 
+  async _pruneDirectories(s, view, deferred, result) {
+    if (!this.local.pruneEmptyDirectories) return;
+    const directories = new Set(), protectedDirectories = new Set();
+    const parents = (name, target) => {
+      for (let slash = name.lastIndexOf('/'); slash > 0; slash = name.lastIndexOf('/', slash - 1)) {
+        target.add(name.slice(0, slash));
+      }
+    };
+    // Full rounds also repair folders left by older clients or an interrupted
+    // cleanup. Incremental rounds do no directory I/O without a new deletion.
+    for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
+      const versions = view.versions.get(name);
+      if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+    }
+    if (!directories.size) return;
+    for (const names of [view.files.keys(), s.files.keys(), deferred]) {
+      for (const name of names) parents(name, protectedDirectories);
+    }
+    for (const dir of protectedDirectories) directories.delete(dir);
+    if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
+  }
+
   async _runOnce(selected, options = {}) {
     const result = counts();
     const started = Date.now();
@@ -618,6 +642,9 @@ class SyncEngine {
     result.deferred = result.deferredPaths.length;
     await this._save(s);
     await this.local.flush?.();
+    // File transactions, receipts and deletion baselines must be durable before
+    // cosmetic directory cleanup. A failed cleanup is safe to retry in full.
+    await this._pruneDirectories(s, after, deferred, result);
     result.stats.durationMs = Date.now() - started;
     return result;
   }

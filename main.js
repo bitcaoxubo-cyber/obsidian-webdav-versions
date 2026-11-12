@@ -454,7 +454,7 @@ const { parallel } = require('./sharded');
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
-const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, deferred: 0,
+const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, cleanedDirectories: 0, conflicts: 0, deferred: 0,
   conflictPaths: [], deferredPaths: [],
   stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
 
@@ -649,7 +649,8 @@ class SyncEngine {
       reviewed: new Map(disk?.reviewed), absent: new Map(disk?.absent), pending: embedded || independent,
       revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
       changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
-      receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false };
+      receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false,
+      cleanupPaths: new Set() };
     s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
@@ -697,6 +698,7 @@ class SyncEngine {
     if (ids) {
       if (sameIds(s.absent.get(path) || [], ids)) return;
       s.absent.set(path, ids);
+      s.cleanupPaths.add(path);
     } else if (!s.absent.delete(path)) return;
     s.changed = true;
   }
@@ -1003,6 +1005,28 @@ class SyncEngine {
     finally { this.remote.clearBlobPreflights?.(); }
   }
 
+  async _pruneDirectories(s, view, deferred, result) {
+    if (!this.local.pruneEmptyDirectories) return;
+    const directories = new Set(), protectedDirectories = new Set();
+    const parents = (name, target) => {
+      for (let slash = name.lastIndexOf('/'); slash > 0; slash = name.lastIndexOf('/', slash - 1)) {
+        target.add(name.slice(0, slash));
+      }
+    };
+    // Full rounds also repair folders left by older clients or an interrupted
+    // cleanup. Incremental rounds do no directory I/O without a new deletion.
+    for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
+      const versions = view.versions.get(name);
+      if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+    }
+    if (!directories.size) return;
+    for (const names of [view.files.keys(), s.files.keys(), deferred]) {
+      for (const name of names) parents(name, protectedDirectories);
+    }
+    for (const dir of protectedDirectories) directories.delete(dir);
+    if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
+  }
+
   async _runOnce(selected, options = {}) {
     const result = counts();
     const started = Date.now();
@@ -1064,6 +1088,9 @@ class SyncEngine {
     result.deferred = result.deferredPaths.length;
     await this._save(s);
     await this.local.flush?.();
+    // File transactions, receipts and deletion baselines must be durable before
+    // cosmetic directory cleanup. A failed cleanup is safe to retry in full.
+    await this._pruneDirectories(s, after, deferred, result);
     result.stats.durationMs = Date.now() - started;
     return result;
   }
@@ -1991,6 +2018,48 @@ class MobileVault extends AdapterIO {
     };
     await visit(''); return files;
   }
+  async pruneEmptyDirectories(directories) {
+    const ordered = [...new Set(directories)];
+    for (const dir of ordered) this.path(dir); // Never accept root, hidden or configuration paths.
+    ordered.sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+    const forget = dir => {
+      for (const cached of this.confirmedDirectories) {
+        if (cached === dir || cached.startsWith(dir + '/')) this.confirmedDirectories.delete(cached);
+      }
+    };
+    const isFolder = async dir => {
+      // A former ancestor may now be a file, or may already have disappeared.
+      let prefix = '';
+      for (const part of dir.split('/')) {
+        prefix = prefix ? prefix + '/' + part : part;
+        if ((await this.adapter.stat(prefix))?.type !== 'folder') { forget(prefix); return false; }
+      }
+      return true;
+    };
+    let removed = 0;
+    for (const dir of ordered) {
+      this.checkActive();
+      try {
+        if (!await isFolder(dir)) { forget(dir); continue; }
+        const children = await this.adapter.list(dir);
+        // Hidden files and unrelated empty child folders also prevent removal.
+        if (children.files.length || children.folders.length) continue;
+        // Native removal may succeed before a lost response or background pause.
+        // Drop mkdir hints before attempting it, including on that failure path.
+        forget(dir);
+        this.checkActive();
+        await this.adapter.rmdir(dir, false); // Atomic empty-only removal protects a newly created child.
+        removed++;
+      } catch (error) {
+        this.checkActive();
+        if (!await isFolder(dir)) { forget(dir); continue; }
+        const children = await this.adapter.list(dir);
+        if (children.files.length || children.folders.length) continue;
+        throw new Error('文件同步已保存，空目录清理未完成，请重试：' + dir);
+      }
+    }
+    return removed;
+  }
   async finish() {
     if (!await this.adapter.exists(this.transaction)) return;
     const done = this.transaction + '-done-' + randomUUID();
@@ -2274,6 +2343,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     if (this.result) {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
+      if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
     }
     if (this.result?.stats) {
       const s = this.result.stats;
