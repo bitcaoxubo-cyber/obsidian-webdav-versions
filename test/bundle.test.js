@@ -83,3 +83,13 @@ test('v1 revision IDs remain compatible with fixed desktop 0.1.1 fixtures',()=>{
   assert.deepEqual([...project(fixture.revisions)],fixture.projection);
   assert.equal(digest(fixture.content),fixture.contentHash);
 });
+
+for (const mobile of [false, true]) test(`E3: ${mobile ? 'mobile' : 'desktop'} settings show manifest version and preservation-aware update guidance`, async () => {
+  const { host } = require('./helpers/plugin-host');
+  const manifest = require('../manifest.json');
+  const h = await host({ mobile });
+  h.settingTabs[0].display();
+  const heading = h.settingTabs[0].containerEl.settings[0];
+  assert.equal(heading.name, '飞牛 WebDAV 版本同步 · ' + manifest.version);
+  assert.equal(heading.desc, '更新请用 BRAT 或覆盖 main.js 与 manifest.json，不要卸载重装');
+});

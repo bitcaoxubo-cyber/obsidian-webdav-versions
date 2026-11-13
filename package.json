@@ -1,6 +1,6 @@
 {
   "name": "obsidian-webdav-versions",
-  "version": "0.4.0-beta.3",
+  "version": "0.4.0-beta.4",
   "private": true,
   "license": "Apache-2.0",
   "scripts": {

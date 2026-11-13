@@ -2611,7 +2611,8 @@ class SyncSettings extends PluginSettingTab {
     el.empty();
     const p = this.plugin;
     const draft = { ...p.settings };
-    new Setting(el).setName('飞牛 WebDAV 版本同步').setHeading();
+    new Setting(el).setName('飞牛 WebDAV 版本同步 · ' + p.manifest.version)
+      .setDesc('更新请用 BRAT 或覆盖 main.js 与 manifest.json，不要卸载重装').setHeading();
     new Setting(el).setName('同步状态').setDesc(p.lastError || p.statusMessage || '就绪')
       .addButton(b => b.setButtonText('立即同步').onClick(async () => { await p.run('sync', true); this.display(); }))
       .addButton(b => b.setButtonText('查看详情').onClick(() => p.openStatus()));
