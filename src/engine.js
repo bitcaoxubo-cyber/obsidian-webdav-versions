@@ -4,7 +4,7 @@ const { indexRevisions, isConflictPath, makeRevision, project, safePath, validat
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 const { parallel } = require('./sharded');
-const { parentDirectory, residualDirectories } = require('./directories');
+const { parentDirectory, underDirectory, forgetDirectory, residualDirectories } = require('./directories');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -78,6 +78,50 @@ class SyncEngine {
     return this._enqueue(() => {
       if (!Array.isArray(actions)) throw new Error('Expected a list of confirmation actions');
       return this._run(undefined, { full: true, decisions: actions, decisionCallbacks: callbacks });
+    });
+  }
+
+  cleanDirectories(paths, callbacks = {}) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string')) throw new Error('空文件夹清理请求无效。');
+      const selected = [...new Set(paths)];
+      // Validate the whole request before performing even one removal.
+      for (const dir of selected) this.local.validateDirectory(dir);
+      const result = { cleaned: [], skipped: [] };
+      for (const dir of selected) {
+        const token = callbacks.begin?.(dir);
+        try {
+          const inspect = async () => {
+            const records = await this.local.inspectDirectories(dir);
+            return this._residualDirectories(records).some(e => e.path === dir) ? records : null;
+          };
+          const records = this.directoryContext ? await inspect() : null;
+          if (!records) { result.skipped.push(dir); continue; }
+          const entry = this._residualDirectories(records).find(e => e.path === dir);
+          let cleaned = false;
+          if (this.local.syncAppliedDirectoryCleanup && !entry.containsDSStore) {
+            cleaned = await this.local.pruneEmptyDirectories(records.keys()) === records.size;
+          } else if (callbacks.trash) {
+            cleaned = await callbacks.trash(dir, token, inspect);
+          }
+          if (cleaned) {
+            result.cleaned.push(dir); forgetDirectory(this.local.directorySnapshot, dir);
+            this.emptyDirectories = this.emptyDirectories.filter(e => !underDirectory(e.path, dir));
+          } else result.skipped.push(dir);
+        } finally { callbacks.finish?.(token); }
+      }
+      result.emptyDirectories = this.emptyDirectories;
+      return result;
+    });
+  }
+
+  retainDirectories(paths, save) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths)) throw new Error('空文件夹保留请求无效。');
+      for (const dir of paths) this.local.validateDirectory(dir);
+      await save(paths);
+      this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+      return this.emptyDirectories;
     });
   }
 
@@ -829,6 +873,9 @@ class SyncEngine {
   }
 
   async _runOnce(selected, options = {}) {
+    // A failed sync may leave a journal. Never authorize directory cleanup using
+    // an older successful round until a new successful round restores context.
+    this.directoryContext = null;
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;

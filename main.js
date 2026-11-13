@@ -125,6 +125,17 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
         .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
         .addButton(b => b.setButtonText(label).setCta().onClick(() => this.execute(actions)));
     }
+    async executeDirectories(entries, keep = false) {
+      if (this.plugin.busy) { new Notice('正在同步，请等待完成后再确认。'); return; }
+      this.close(); await this.plugin.runDirectories(entries.map(e => e.path), keep);
+    }
+    confirmDirectories(entries) {
+      this.contentEl.empty();
+      this.contentEl.createEl('p', { text: `将清理 ${entries.length} 个空文件夹。只删除空文件夹，不删除任何笔记。目录内容或同步状态已变化时会跳过；手机及含 .DS_Store 的目录会移入回收站。` });
+      new Setting(this.contentEl)
+        .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
+        .addButton(b => b.setButtonText('确认清理空文件夹').setCta().onClick(() => this.executeDirectories(entries)));
+    }
     async openFile(name) {
       const file = this.app.vault.getAbstractFileByPath(name);
       if (file) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); }
@@ -167,6 +178,17 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
         for (const entry of staleConflicts) new Setting(this.contentEl).setName(entry.path).setDesc('较新版本：' + entry.selected)
           .addButton(b => b.setButtonText('采用较新版本').onClick(() => this.execute([decision('resolve', entry, entry.selected)])));
       }
+      const empty = this.result.emptyDirectories || [];
+      if (empty.length) {
+        this.contentEl.createEl('h3', { text: `空文件夹 · ${empty.length}` });
+        new Setting(this.contentEl)
+          .addButton(b => b.setButtonText('全部清理').onClick(() => this.confirmDirectories(empty)))
+          .addButton(b => b.setButtonText('全部保留').onClick(() => this.executeDirectories(empty, true)));
+        for (const entry of empty) new Setting(this.contentEl).setName(entry.path)
+          .setDesc(`包含 ${entry.subdirectoryCount} 个子文件夹${entry.containsDSStore ? ' · 含 .DS_Store' : ''}`)
+          .addButton(b => b.setButtonText('清理').onClick(() => this.executeDirectories([entry])))
+          .addButton(b => b.setButtonText('保留').onClick(() => this.executeDirectories([entry], true)));
+      }
       const other = (this.result.conflictPaths || []).filter(p => !classified.has(p));
       const deferred = this.result.deferredPaths || [];
       if (other.length) {
@@ -176,7 +198,7 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
       }
       if (deferred.length) this.contentEl.createEl('h3', { text: '等待同步' });
       for (const name of deferred) this.contentEl.createEl('p', { text: name });
-      if (!confirmationCount(this.result) && !other.length && !deferred.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
+      if (!confirmationCount(this.result) && !other.length && !deferred.length && !empty.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
     }
   };
 }
@@ -625,7 +647,7 @@ const { indexRevisions, isConflictPath, makeRevision, project, safePath, validat
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 const { parallel } = require('./sharded');
-const { parentDirectory, residualDirectories } = require('./directories');
+const { parentDirectory, underDirectory, forgetDirectory, residualDirectories } = require('./directories');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -699,6 +721,50 @@ class SyncEngine {
     return this._enqueue(() => {
       if (!Array.isArray(actions)) throw new Error('Expected a list of confirmation actions');
       return this._run(undefined, { full: true, decisions: actions, decisionCallbacks: callbacks });
+    });
+  }
+
+  cleanDirectories(paths, callbacks = {}) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string')) throw new Error('空文件夹清理请求无效。');
+      const selected = [...new Set(paths)];
+      // Validate the whole request before performing even one removal.
+      for (const dir of selected) this.local.validateDirectory(dir);
+      const result = { cleaned: [], skipped: [] };
+      for (const dir of selected) {
+        const token = callbacks.begin?.(dir);
+        try {
+          const inspect = async () => {
+            const records = await this.local.inspectDirectories(dir);
+            return this._residualDirectories(records).some(e => e.path === dir) ? records : null;
+          };
+          const records = this.directoryContext ? await inspect() : null;
+          if (!records) { result.skipped.push(dir); continue; }
+          const entry = this._residualDirectories(records).find(e => e.path === dir);
+          let cleaned = false;
+          if (this.local.syncAppliedDirectoryCleanup && !entry.containsDSStore) {
+            cleaned = await this.local.pruneEmptyDirectories(records.keys()) === records.size;
+          } else if (callbacks.trash) {
+            cleaned = await callbacks.trash(dir, token, inspect);
+          }
+          if (cleaned) {
+            result.cleaned.push(dir); forgetDirectory(this.local.directorySnapshot, dir);
+            this.emptyDirectories = this.emptyDirectories.filter(e => !underDirectory(e.path, dir));
+          } else result.skipped.push(dir);
+        } finally { callbacks.finish?.(token); }
+      }
+      result.emptyDirectories = this.emptyDirectories;
+      return result;
+    });
+  }
+
+  retainDirectories(paths, save) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths)) throw new Error('空文件夹保留请求无效。');
+      for (const dir of paths) this.local.validateDirectory(dir);
+      await save(paths);
+      this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+      return this.emptyDirectories;
     });
   }
 
@@ -1450,6 +1516,9 @@ class SyncEngine {
   }
 
   async _runOnce(selected, options = {}) {
+    // A failed sync may leave a journal. Never authorize directory cleanup using
+    // an older successful round until a new successful round restores context.
+    this.directoryContext = null;
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
@@ -1820,6 +1889,28 @@ class DiskVault {
       }
     }
     return removed;
+  }
+
+  validateDirectory(dir) { this.filePath(dir); }
+  async inspectDirectories(dir) {
+    this.validateDirectory(dir);
+    const records = new Map();
+    const visit = async name => {
+      const file = this.filePath(name);
+      if (!statMaybe(file)?.isDirectory()) return false;
+      const record = directoryRecord(); records.set(name, record);
+      for (const e of await fsp.readdir(file, { withFileTypes: true })) {
+        const child = name + '/' + e.name.normalize('NFC');
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store')) record.blocked = true;
+        else if (e.isDirectory() && e.name !== '.DS_Store') {
+          record.folders.add(child); if (!await visit(child)) record.blocked = true;
+        } else if (e.isFile()) record.files.add(child);
+        else record.blocked = true;
+      }
+      return true;
+    };
+    try { return await visit(dir) ? records : null; }
+    catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
   }
 
   readFile(file, limit) {
@@ -2553,6 +2644,28 @@ class MobileVault extends AdapterIO {
     }
     return removed;
   }
+  validateDirectory(dir) { this.path(dir); }
+  async inspectDirectories(dir) {
+    this.path(dir); this.checkActive();
+    const records = new Map();
+    const visit = async name => {
+      this.path(name); this.checkActive();
+      if ((await this.adapter.stat(name))?.type !== 'folder') return false;
+      const record = directoryRecord(); records.set(name, record);
+      const listed = await this.adapter.list(name);
+      for (const p of [...listed.files, ...listed.folders]) {
+        if (!p.startsWith(name + '/') || p.slice(name.length + 1).includes('/')) throw new Error('本地目录清单无效。');
+        if (p.split('/').some(v => v.startsWith('.'))) { record.blocked = true; continue; }
+        if (listed.folders.includes(p)) { record.folders.add(p); if (!await visit(p)) record.blocked = true; }
+        else record.files.add(p);
+      }
+      return true;
+    };
+    return await visit(dir) ? records : null;
+  }
+  forgetDirectoryHints(dir) {
+    for (const cached of this.confirmedDirectories) if (cached === dir || cached.startsWith(dir + '/')) this.confirmedDirectories.delete(cached);
+  }
   async finish() {
     if (!await this.adapter.exists(this.transaction)) return;
     const done = this.transaction + '-done-' + randomUUID();
@@ -2690,10 +2803,11 @@ const { SyncEngine } = require('./engine');
 const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 const { assertRecoverableTrash } = require('./deletion');
+const { underDirectory } = require('./directories');
 const { createConfirmationModal, confirmationKeys, confirmationCount } = require('./confirmations');
 const ConfirmationModal = createConfirmationModal({ Modal, Notice, Setting });
 
-const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
+const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false, retainedEmptyDirectories: [] };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');
 
 class ResolveModal extends Modal {
@@ -2719,6 +2833,11 @@ class SyncSettings extends PluginSettingTab {
     new Setting(el).setName('同步状态').setDesc(p.lastError || p.statusMessage || '就绪')
       .addButton(b => b.setButtonText('立即同步').onClick(async () => { await p.run('sync', true); this.display(); }))
       .addButton(b => b.setButtonText('查看详情').onClick(() => p.openStatus()));
+    new Setting(el).setName(`已保留 ${p.settings.retainedEmptyDirectories.length} 个空文件夹`)
+      .setDesc('仅本机生效。重置后，下次全量同步会重新识别。')
+      .addButton(b => b.setButtonText('重置').onClick(async () => {
+        if (await p.saveRetainedDirectories([], true)) this.display();
+      }));
     if (Platform.isMobile) el.createEl('p', { text: '手机测试版：单个文件最多 128 MiB；首次接入先使用独立测试库，保持应用在前台。' });
     new Setting(el).setName('WebDAV 文件夹地址').setDesc('填写各设备共用的专用文件夹的完整 HTTPS 地址。请先在飞牛中建好该文件夹。')
       .addText(t => t.setPlaceholder('https://nas.example/笔记同步/').setValue(draft.url).onChange(v => { draft.url = v.trim(); }));
@@ -2743,6 +2862,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   async onload() {
     if (!this.app.secretStorage || !SecretComponent) throw new Error('请更新到 Obsidian 1.11.4 或更高版本。');
     this.settings = Object.assign({}, defaults, await this.loadData());
+    this.settings.retainedEmptyDirectories = this.validRetainedDirectories(this.settings.retainedEmptyDirectories);
+    this.directoryTokens = new Set();
     this.stopped = false;
     this.ready = false;
     this.confirmationModal = null;
@@ -2768,6 +2889,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
 
     for (const event of ['create', 'modify', 'rename', 'delete']) {
       this.registerEvent(this.app.vault.on(event, (file, previous) => {
+        this.noteDirectoryEvent(file.path, event === 'rename' ? previous : null);
         const paths = [file.path, ...(event === 'rename' && previous ? [previous] : [])].filter(path => this.visible(path));
         // A folder rename may have no per-file events; rescan its descendants.
         if (paths.length) this.scheduler.change(Array.isArray(file.children) ? [] : paths, { full: Array.isArray(file.children) });
@@ -2784,6 +2906,11 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     const parts = name.split('/');
     return parts[0] !== this.app.vault.configDir && parts.every(p => p && !p.startsWith('.'));
   }
+  validRetainedDirectories(paths) {
+    return [...new Set((Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' &&
+      !/[\\\u0000-\u001f]/.test(p) && !/^[A-Za-z]:/.test(p) && this.visible(p) &&
+      p.split('/')[0].normalize('NFC').toLowerCase() !== this.app.vault.configDir.normalize('NFC').toLowerCase()))].sort();
+  }
   remoteFor(s) {
     if (!s.url || !s.username || !s.secret || !s.device) throw new Error('请先填写地址、用户名、密钥和设备名称。');
     if (s.device.length > 64 || /[\u0000-\u001f]/.test(s.device)) throw new Error('请使用简短的设备名称。');
@@ -2796,8 +2923,9 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.configuring = true;
     try {
       this.remoteFor(draft);
-      await this.saveData({ ...draft });
-      this.settings = { ...draft };
+      const settings = { ...draft, retainedEmptyDirectories: this.settings.retainedEmptyDirectories };
+      await this.saveData(settings);
+      this.settings = settings;
       this.engine = null;
       this.result = null;
       this.confirmationModal?.close();
@@ -2833,7 +2961,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       local = new DiskVault(this.app.vault.adapter.getBasePath(), this.app.vault.configDir, guard);
       state = new DiskState(local.privateDir, s.url, s.username);
     }
-    this.engine = new SyncEngine({ remote, local, state, device: s.device });
+    this.engine = new SyncEngine({ remote, local, state, device: s.device,
+      retainedDirectories: () => this.settings.retainedEmptyDirectories });
     return this.engine;
   }
   schedule(delay) { this.scheduler.schedule(delay); }
@@ -2893,6 +3022,70 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.getEngine().local.invalidate?.(physical);
     return true;
   }
+  noteDirectoryEvent(path, previous) {
+    for (const token of this.directoryTokens) {
+      if ([path, previous].some(p => p && (underDirectory(p, token.path) || underDirectory(token.path, p)))) token.changed = true;
+    }
+  }
+  beginDirectoryTrash(path) {
+    const token = { path, file: this.app.vault.getAbstractFileByPath(path), changed: false };
+    this.directoryTokens.add(token); return token;
+  }
+  directoryTrashCurrent(token) {
+    return !!token && !token.changed && this.isActive() && document.visibilityState !== 'hidden' &&
+      Array.isArray(token.file?.children) && token.file.path === token.path &&
+      this.app.vault.getAbstractFileByPath(token.path) === token.file &&
+      !this.app.workspace.getLeavesOfType('markdown').some(leaf => leaf.view.file && underDirectory(leaf.view.file.path, token.path));
+  }
+  async trashEmptyDirectory(path, token, inspect) {
+    if (!this.directoryTrashCurrent(token)) return false;
+    // The second subtree listing is adjacent to the final synchronous token and
+    // preference checks. The remaining native-call race is recoverable in trash.
+    if (!await inspect() || !this.directoryTrashCurrent(token)) return false;
+    assertRecoverableTrash(this.app);
+    this.getEngine().local.forgetDirectoryHints?.(path);
+    // 1.15.1 returns false when OS trash refuses; older public versions resolve
+    // void on success. A refusal must not be reported as a cleaned directory.
+    return await this.app.fileManager.trashFile(token.file) !== false;
+  }
+  async saveRetainedDirectories(paths, reset = false) {
+    if (this.busy || this.configuring) { new Notice('请等当前操作完成再保留或重置。'); return false; }
+    const retainedEmptyDirectories = this.validRetainedDirectories(reset ? [] : [...this.settings.retainedEmptyDirectories, ...paths]);
+    this.configuring = true;
+    try {
+      const settings = { ...this.settings, retainedEmptyDirectories };
+      await this.saveData(settings); this.settings = settings; return true;
+    } finally { this.configuring = false; }
+  }
+  async runDirectories(paths, keep = false) {
+    if (!this.isActive() || document.visibilityState === 'hidden' || !this.ready || this.busy || this.configuring) return;
+    const lock = globalThis[activeVaults] ||= new Set(), key = this.app.vault.adapter;
+    if (lock.has(key)) { new Notice('正在同步，请等待完成'); return; }
+    lock.add(key); this.busy = true; this.scheduler.pause(); this.scheduler.running = true;
+    try {
+      const engine = this.getEngine();
+      let outcome;
+      if (keep) {
+        const emptyDirectories = await engine.retainDirectories(paths, async accepted => {
+          const settings = { ...this.settings, retainedEmptyDirectories: this.validRetainedDirectories([...this.settings.retainedEmptyDirectories, ...accepted]) };
+          await this.saveData(settings); this.settings = settings;
+        });
+        outcome = { emptyDirectories }; new Notice(`已保留 ${paths.length} 个空文件夹，仅本机生效。`);
+      } else {
+        outcome = await engine.cleanDirectories(paths, {
+          begin: path => this.beginDirectoryTrash(path), finish: token => this.directoryTokens.delete(token),
+          trash: (path, token, inspect) => this.trashEmptyDirectory(path, token, inspect),
+        });
+        new Notice(`已清理 ${outcome.cleaned.length} 个空文件夹，跳过 ${outcome.skipped.length} 个。内容、编辑器或同步状态已变化的目录会保留。`, 10000);
+      }
+      if (this.result) this.result = { ...this.result, emptyDirectories: outcome.emptyDirectories };
+      this.updateConfirmations(); return outcome;
+    } catch (error) { new Notice('空文件夹处理未完成：' + error.message, 10000); }
+    finally {
+      this.busy = false; lock.delete(key); this.scheduler.running = false; this.scheduler.armPoll();
+      if (this.scheduler.fullRequested > this.scheduler.fullCompleted || this.scheduler.eventDirty.size) this.scheduler.schedule(1000);
+    }
+  }
   openStatus() {
     const modal = new Modal(this.app);
     modal.titleEl.setText('飞牛同步状态');
@@ -2904,7 +3097,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
       const waiting = confirmationCount(r);
       if (waiting) modal.contentEl.createEl('p', { text: `有 ${waiting} 个文件等待确认。请打开“查看同步冲突”处理。` });
-      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '为保护目录内新写入的内容，已保留手机空文件夹；文件删除同步不受影响。' });
+      if (r.emptyDirectories?.length) modal.contentEl.createEl('p', { text: `有 ${r.emptyDirectories.length} 个空文件夹可清理。请打开“查看同步冲突”。` });
+      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '手机空文件夹不会自动清理；请在“查看同步冲突”的空文件夹组中确认清理。' });
     }
     if (this.result?.stats) {
       const s = this.result.stats;

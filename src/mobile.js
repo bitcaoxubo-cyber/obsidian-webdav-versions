@@ -460,6 +460,28 @@ class MobileVault extends AdapterIO {
     }
     return removed;
   }
+  validateDirectory(dir) { this.path(dir); }
+  async inspectDirectories(dir) {
+    this.path(dir); this.checkActive();
+    const records = new Map();
+    const visit = async name => {
+      this.path(name); this.checkActive();
+      if ((await this.adapter.stat(name))?.type !== 'folder') return false;
+      const record = directoryRecord(); records.set(name, record);
+      const listed = await this.adapter.list(name);
+      for (const p of [...listed.files, ...listed.folders]) {
+        if (!p.startsWith(name + '/') || p.slice(name.length + 1).includes('/')) throw new Error('本地目录清单无效。');
+        if (p.split('/').some(v => v.startsWith('.'))) { record.blocked = true; continue; }
+        if (listed.folders.includes(p)) { record.folders.add(p); if (!await visit(p)) record.blocked = true; }
+        else record.files.add(p);
+      }
+      return true;
+    };
+    return await visit(dir) ? records : null;
+  }
+  forgetDirectoryHints(dir) {
+    for (const cached of this.confirmedDirectories) if (cached === dir || cached.startsWith(dir + '/')) this.confirmedDirectories.delete(cached);
+  }
   async finish() {
     if (!await this.adapter.exists(this.transaction)) return;
     const done = this.transaction + '-done-' + randomUUID();

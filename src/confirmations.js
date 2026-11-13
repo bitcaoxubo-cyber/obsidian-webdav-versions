@@ -40,6 +40,17 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
         .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
         .addButton(b => b.setButtonText(label).setCta().onClick(() => this.execute(actions)));
     }
+    async executeDirectories(entries, keep = false) {
+      if (this.plugin.busy) { new Notice('正在同步，请等待完成后再确认。'); return; }
+      this.close(); await this.plugin.runDirectories(entries.map(e => e.path), keep);
+    }
+    confirmDirectories(entries) {
+      this.contentEl.empty();
+      this.contentEl.createEl('p', { text: `将清理 ${entries.length} 个空文件夹。只删除空文件夹，不删除任何笔记。目录内容或同步状态已变化时会跳过；手机及含 .DS_Store 的目录会移入回收站。` });
+      new Setting(this.contentEl)
+        .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
+        .addButton(b => b.setButtonText('确认清理空文件夹').setCta().onClick(() => this.executeDirectories(entries)));
+    }
     async openFile(name) {
       const file = this.app.vault.getAbstractFileByPath(name);
       if (file) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); }
@@ -82,6 +93,17 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
         for (const entry of staleConflicts) new Setting(this.contentEl).setName(entry.path).setDesc('较新版本：' + entry.selected)
           .addButton(b => b.setButtonText('采用较新版本').onClick(() => this.execute([decision('resolve', entry, entry.selected)])));
       }
+      const empty = this.result.emptyDirectories || [];
+      if (empty.length) {
+        this.contentEl.createEl('h3', { text: `空文件夹 · ${empty.length}` });
+        new Setting(this.contentEl)
+          .addButton(b => b.setButtonText('全部清理').onClick(() => this.confirmDirectories(empty)))
+          .addButton(b => b.setButtonText('全部保留').onClick(() => this.executeDirectories(empty, true)));
+        for (const entry of empty) new Setting(this.contentEl).setName(entry.path)
+          .setDesc(`包含 ${entry.subdirectoryCount} 个子文件夹${entry.containsDSStore ? ' · 含 .DS_Store' : ''}`)
+          .addButton(b => b.setButtonText('清理').onClick(() => this.executeDirectories([entry])))
+          .addButton(b => b.setButtonText('保留').onClick(() => this.executeDirectories([entry], true)));
+      }
       const other = (this.result.conflictPaths || []).filter(p => !classified.has(p));
       const deferred = this.result.deferredPaths || [];
       if (other.length) {
@@ -91,7 +113,7 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
       }
       if (deferred.length) this.contentEl.createEl('h3', { text: '等待同步' });
       for (const name of deferred) this.contentEl.createEl('p', { text: name });
-      if (!confirmationCount(this.result) && !other.length && !deferred.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
+      if (!confirmationCount(this.result) && !other.length && !deferred.length && !empty.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
     }
   };
 }

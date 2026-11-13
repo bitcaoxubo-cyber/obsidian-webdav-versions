@@ -79,4 +79,12 @@ test('F2: synchronous apply deletion is reflected in the existing directory scan
   assert.deepEqual(seen, ['', 'p', 'p/q']);
   assert.deepEqual(result.emptyDirectories, [{ path: 'p', subdirectoryCount: 1, containsDSStore: false }]);
 });
+test('F2: a current remote file not yet downloaded protects a physically empty directory', async t => {
+  const r = remote(), a = disk(t, r), b = disk(t, r);
+  a.put('a/remote.md', 'remote content'); await a.engine.sync(); b.mkdir('a');
+  b.local.guard = () => false;
+  const result = await b.engine.sync();
+  assert.equal(b.has('a/remote.md'), false); assert.deepEqual(result.deferredPaths, ['a/remote.md']);
+  assert.deepEqual(result.emptyDirectories, []); assert.ok(b.has('a'));
+});
 module.exports = { remnants };

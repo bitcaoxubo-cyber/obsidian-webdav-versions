@@ -267,6 +267,28 @@ class DiskVault {
     return removed;
   }
 
+  validateDirectory(dir) { this.filePath(dir); }
+  async inspectDirectories(dir) {
+    this.validateDirectory(dir);
+    const records = new Map();
+    const visit = async name => {
+      const file = this.filePath(name);
+      if (!statMaybe(file)?.isDirectory()) return false;
+      const record = directoryRecord(); records.set(name, record);
+      for (const e of await fsp.readdir(file, { withFileTypes: true })) {
+        const child = name + '/' + e.name.normalize('NFC');
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store')) record.blocked = true;
+        else if (e.isDirectory() && e.name !== '.DS_Store') {
+          record.folders.add(child); if (!await visit(child)) record.blocked = true;
+        } else if (e.isFile()) record.files.add(child);
+        else record.blocked = true;
+      }
+      return true;
+    };
+    try { return await visit(dir) ? records : null; }
+    catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
+  }
+
   readFile(file, limit) {
     const data = readBytes(file, limit);
     if (data !== null && this.stats && !file.startsWith(this.privateDir + path.sep)) this.stats.vaultReads++;

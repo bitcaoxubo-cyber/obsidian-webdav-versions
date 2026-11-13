@@ -14,9 +14,11 @@ function result(groups = {}) {
 }
 const stale = name => ({ path: name, hash: digest('old'), tips: ['deleted-' + name] });
 
-async function host({ mobile = true } = {}) {
+async function host({ mobile = true, savedData = {}, bundlePath = path.join(__dirname, '../../main.js') } = {}) {
   const notices = [], modals = [], commands = new Map(), settingTabs = [], timers = [], fileObjects = new Map(), trashed = new Map();
   let fileClock = 1;
+  let saved = savedData;
+  const events = new Map();
   class FileMap extends Map {
     set(name, data) {
       const file = fileObjects.get(name) || { path: name, stat: { ctime: fileClock } };
@@ -53,8 +55,8 @@ async function host({ mobile = true } = {}) {
     close() { this.opened = false; this.onClose?.(); }
   }
   class Plugin {
-    async loadData() { return { url: 'https://example.test/vault/', username: 'u', secret: 'key', device: 'test', auto: true }; }
-    async saveData() {} addStatusBarItem() { return new Element(); } addRibbonIcon() {}
+    async loadData() { return { url: 'https://example.test/vault/', username: 'u', secret: 'key', device: 'test', auto: true, ...saved }; }
+    async saveData(data) { saved = structuredClone(data); } addStatusBarItem() { return new Element(); } addRibbonIcon() {}
     addCommand(c) { commands.set(c.id, c); } addSettingTab(s) { settingTabs.push(s); }
     registerEvent() {} registerDomEvent() {}
   }
@@ -67,12 +69,12 @@ async function host({ mobile = true } = {}) {
   const context = vm.createContext({ module: { exports: {} }, require(name) { if (name === 'obsidian') return api; if (!mobile && name === 'node:os') return { hostname: () => 'test-host' }; throw new Error(name); },
     crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, Uint32Array, ArrayBuffer, DataView, URL, structuredClone, btoa, atob,
     document, window: { setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {} } });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(bundlePath, 'utf8'), context);
   const p = new context.module.exports(); p.manifest = manifest;
   let trashOption = 'local', leaves = [], outcome = result(), syncCalls = 0, confirmCalls = 0;
   const callbacks = [], received = [];
   p.app = { secretStorage: { getSecret: () => 'secret' },
-    vault: { configDir: '.obsidian', adapter: {}, on() { return {}; }, getConfig: () => trashOption,
+    vault: { configDir: '.obsidian', adapter: {}, on(name, handler) { events.set(name, handler); return {}; }, getConfig: () => trashOption,
       getAbstractFileByPath(name) { return fileObjects.get(name) || null; } },
     fileManager: { async trashFile(file) { trashed.set(file.path, files.get(file.path)); files.delete(file.path); } },
     workspace: { onLayoutReady(f) { f(); }, getLeavesOfType: () => leaves, getLeaf: () => ({ openFile: async () => {} }) },
@@ -82,7 +84,8 @@ async function host({ mobile = true } = {}) {
     async sync() { syncCalls++; return structuredClone(outcome); },
     async confirm(actions, hooks) { confirmCalls++; received.push(actions); callbacks.push(hooks); return { ...result(), appliedDecisions: actions.length, skippedDecisions: [] }; } };
   p.engine = engine;
-  return { p, files, trashed, notices, modals, commands, settingTabs, document, engine, received, callbacks,
+  return { p, files, fileObjects, events, trashed, notices, modals, commands, settingTabs, document, engine, received, callbacks,
+    get savedData() { return saved; },
     setResult(r) { outcome = r; }, setTrash(value) { trashOption = value; }, setLeaves(value) { leaves = value; },
     get syncCalls() { return syncCalls; }, get confirmCalls() { return confirmCalls; } };
 }
