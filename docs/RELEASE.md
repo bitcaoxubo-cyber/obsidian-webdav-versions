@@ -1,6 +1,6 @@
 # 0.4.0-beta.4：旧副本识别、删除确认与保留记录更新
 
-**尚未发布，等待复核。本轮只提交评审 PR，不合并、不打 tag、不发布。**
+**本版更新保留笔记、设置和同步记录，不要卸载重装。**
 
 ## 变化
 
@@ -29,14 +29,14 @@
 
 完整自动测试 **358/358 通过**：原 261 项加 E0 14、E1 25、E2 引擎 42、E2 界面 14、E3 双平台 2 项；既有断言未删除或弱化。真实 beta.3 状态夹具、三设备冲突清理、50 文件批量确认、修改与未保存保护、部分删除和中断恢复均通过隔离验证。
 
-四条性能阈值命令通过。三条无延迟基准的次数和字节与 beta.3 完全相同；20 ms 延迟上传轮仅有用户已授权的 5 秒检查点字节波动：私有／总读写各减少 3,530 字节，哈希输入减少 10,398 字节，调用次数、HTTP、库内文件字节及最终状态文件大小不变。详细结果见 [交付报告](旧副本与删除确认.md)。历史性能证据保持原样。
+四条性能阈值命令通过。三条无延迟基准的次数和字节与 beta.3 完全相同；20 ms 延迟上传轮仅有用户已授权的 5 秒检查点字节波动：私有／总读写各减少 3,530 字节，哈希输入减少 10,398 字节，调用次数、HTTP、库内文件字节及最终状态文件大小不变。详细结果见 [交付报告](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/blob/0.4.0-beta.4/docs/%E6%97%A7%E5%89%AF%E6%9C%AC%E4%B8%8E%E5%88%A0%E9%99%A4%E7%A1%AE%E8%AE%A4.md)。历史性能证据保持原样。
 
 重复提示的抑制仅在本次插件加载会话内生效，重启后可能再次提醒。公开 API 与自动化模型通过，不等于报错手机已通过真机验收。
 
 ## 安装与更新
 
-本评审版目前没有 Release。发布前，仅在独立测试库使用评审产物验收。
+先备份各台设备的本地库，并在独立测试库验收。
 
-正式发布后，电脑与手机都可在 BRAT 中编辑 `bitcaoxubo-cyber/obsidian-webdav-versions`，把固定版本改为 `0.4.0-beta.4`。手动更新时先关闭 Obsidian，仅覆盖插件目录中的 `main.js` 和 `manifest.json`，保留 `data.json`、`local-state/` 和笔记，再打开应用。
+电脑与手机都可在 BRAT 中编辑 `bitcaoxubo-cyber/obsidian-webdav-versions`，把固定版本改为 `0.4.0-beta.4`。手动更新时先关闭 Obsidian，仅覆盖插件目录中的 `main.js` 和 `manifest.json`，保留 `data.json`、`local-state/` 和笔记，再打开应用。
 
-不要卸载重装。详细步骤见 [README：更新插件](../README.md#更新插件) 和 [iPhone 安装与验收](iPhone安装与验收.md)。
+不要卸载重装。详细步骤见 [README：更新插件](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/blob/0.4.0-beta.4/README.md#%E6%9B%B4%E6%96%B0%E6%8F%92%E4%BB%B6) 和 [iPhone 安装与验收](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/blob/0.4.0-beta.4/docs/iPhone%E5%AE%89%E8%A3%85%E4%B8%8E%E9%AA%8C%E6%94%B6.md)。
