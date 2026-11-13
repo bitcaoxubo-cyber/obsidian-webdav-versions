@@ -443,6 +443,34 @@ class DavRemote {
 module.exports = { DavRemote, NAMESPACE, checkedRevision };
 
 },
+"deletion":function(module,exports,require){
+'use strict';
+
+// Desktop and mobile use the same Obsidian FileManager.trashFile contract; the
+// plugin's minimum supported host is 1.11.4. The method follows trashOption:
+// the inspected desktop 1.15.0 implementation routes "none" to vault.delete.
+// Its presence or name alone therefore cannot guarantee recoverable deletion.
+// This preflight neither changes preferences nor deletes anything. Call it
+// immediately before each actual trashFile call, including in a batch.
+function assertRecoverableTrash(app) {
+  if (typeof app?.fileManager?.trashFile !== 'function') {
+    throw new Error('当前 Obsidian 缺少回收站删除接口；请更新到 1.11.4 或更高版本。未执行删除。');
+  }
+  if (typeof app?.vault?.getConfig !== 'function') {
+    throw new Error('无法确认 Obsidian 回收站设置；未执行删除。');
+  }
+  let option;
+  try { option = app.vault.getConfig('trashOption'); }
+  catch { throw new Error('无法读取 Obsidian 回收站设置；未执行删除。'); }
+  if (option !== 'system' && option !== 'local') {
+    throw new Error('请先在 Obsidian 的文件与链接设置中选择系统回收站或 Obsidian 回收站，再确认删除。当前设置不支持可恢复删除。');
+  }
+  return option;
+}
+
+module.exports = { assertRecoverableTrash };
+
+},
 "engine":function(module,exports,require){
 'use strict';
 
@@ -1932,6 +1960,7 @@ class MobileVault extends AdapterIO {
     this.cacheLoaded = false;
     this.cacheDirty = false;
     this.deep = false;
+    this.directoryCleanupBlocked = false;
   }
   path(name) {
     if (typeof name !== 'string' || !name || /[\\\x00-\x1f]/.test(name) || /^[A-Za-z]:/.test(name) ||
@@ -1954,6 +1983,7 @@ class MobileVault extends AdapterIO {
   beginRound({ deep = false } = {}) {
     this.statHints.clear();
     this.deep = deep;
+    this.directoryCleanupBlocked = false;
   }
   async loadCache() {
     if (this.cacheLoaded) return;
@@ -2043,6 +2073,12 @@ class MobileVault extends AdapterIO {
   async pruneEmptyDirectories(directories) {
     const ordered = [...new Set(directories)];
     for (const dir of ordered) this.path(dir); // Never accept root, hidden or configuration paths.
+    // Some shipped Capacitor adapters ignore recursive=false. Checking emptiness
+    // before a recursive removal cannot protect a file created in between.
+    // Keep empty folders unless this exact adapter explicitly promises atomic,
+    // nonrecursive removal; the native mobile adapter does not currently do so.
+    this.directoryCleanupBlocked = ordered.length > 0 && this.adapter.supportsAtomicEmptyDirectoryRemoval !== true;
+    if (this.directoryCleanupBlocked) return 0;
     ordered.sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
     const forget = dir => {
       for (const cached of this.confirmedDirectories) {
