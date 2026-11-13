@@ -1,6 +1,6 @@
 # 飞牛 WebDAV 版本同步 · Mac / iPhone
 
-**0.4.0-beta.5：残留空文件夹清理，尚未发布，等待复核。**
+**0.4.0-beta.5：残留空文件夹清理。**
 
 本版本为电脑增加同步后的安全空目录清理，并在确认窗口加入「空文件夹」组，处理手机和历史残留目录。沿用 beta.4 的旧副本识别与文件删除确认。详见 [本版说明](docs/RELEASE.md) 和 [空文件夹交付与验收报告](docs/空文件夹清理.md)。
 
@@ -21,13 +21,13 @@ Mac 与 iPhone 各自打开本地 Obsidian 库，通过飞牛现有 HTTPS WebDAV
 
 ## 更新插件
 
-电脑和手机都可以用 BRAT 更新，步骤相同。当前已发布的固定版本仍是 `0.4.0-beta.4`；`0.4.0-beta.5` 尚未发布，不要在 BRAT 中选择尚不存在的 tag。下面的安装步骤对应已发布版本。
+电脑和手机都可以用 BRAT 更新，步骤相同；本次选择固定版本 `0.4.0-beta.5`。
 
 ### 用 BRAT 更新（电脑与手机）
 
 1. 先备份各自的本地库，并暂停需要升级的设备上的自动同步。
 2. 在电脑或手机的 Obsidian 社区插件中安装并启用 BRAT。已经装好 BRAT 的设备不需要重装它。
-3. 在 BRAT 添加 `bitcaoxubo-cyber/obsidian-webdav-versions`；已经添加过的，在 BRAT 插件列表中编辑它，把固定版本改为 `0.4.0-beta.4`。
+3. 在 BRAT 添加 `bitcaoxubo-cyber/obsidian-webdav-versions`；已经添加过的，在 BRAT 插件列表中编辑它，把固定版本改为 `0.4.0-beta.5`。
 4. 等待更新完成，检查 WebDAV Versions 设置页显示的版本。固定版本不会随普通自动更新切到其他版本，下次升级时再次编辑固定版本号。
 5. 所有设备都升级后，先在各设备保持前台、手动同步并检查确认窗口，再恢复自动同步。
 
@@ -49,7 +49,7 @@ BRAT 的安装与更新只写插件程序文件，保留原有 `data.json` 和 `
 
 1. 在 Obsidian 创建空白库，关闭 Store in iCloud，存放于“我的 iPhone → Obsidian”。
 2. 在第三方插件市场安装并启用 BRAT。
-3. 在 BRAT 添加 `bitcaoxubo-cyber/obsidian-webdav-versions`，选择固定版本 `0.4.0-beta.4`。先在独立测试库验收，不要自动跟随最新版本。
+3. 在 BRAT 添加 `bitcaoxubo-cyber/obsidian-webdav-versions`，选择固定版本 `0.4.0-beta.5`。先在独立测试库验收，不要自动跟随最新版本。
 4. 启用“WebDAV Versions · 飞牛同步”，按 [iPhone 安装与验收](docs/iPhone安装与验收.md) 配置独立的测试 WebDAV 子目录。
 
 首次移动端验收包括 Mac↔iPhone 双向同步、旧副本确认、离线冲突、后台中断恢复和大附件。通过后，再建立手机正式空白本地库接入原有目录。已安装插件的设备按“更新插件”一节保留设置及同步记录，不需要重建笔记库。**本版本尚未完成真实 iPhone 验收。**
