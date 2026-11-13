@@ -298,6 +298,7 @@ class MobileVault extends AdapterIO {
     this.cacheLoaded = false;
     this.cacheDirty = false;
     this.deep = false;
+    this.directoryCleanupBlocked = false;
   }
   path(name) {
     if (typeof name !== 'string' || !name || /[\\\x00-\x1f]/.test(name) || /^[A-Za-z]:/.test(name) ||
@@ -320,6 +321,7 @@ class MobileVault extends AdapterIO {
   beginRound({ deep = false } = {}) {
     this.statHints.clear();
     this.deep = deep;
+    this.directoryCleanupBlocked = false;
   }
   async loadCache() {
     if (this.cacheLoaded) return;
@@ -409,6 +411,12 @@ class MobileVault extends AdapterIO {
   async pruneEmptyDirectories(directories) {
     const ordered = [...new Set(directories)];
     for (const dir of ordered) this.path(dir); // Never accept root, hidden or configuration paths.
+    // Some shipped Capacitor adapters ignore recursive=false. Checking emptiness
+    // before a recursive removal cannot protect a file created in between.
+    // Keep empty folders unless this exact adapter explicitly promises atomic,
+    // nonrecursive removal; the native mobile adapter does not currently do so.
+    this.directoryCleanupBlocked = ordered.length > 0 && this.adapter.supportsAtomicEmptyDirectoryRemoval !== true;
+    if (this.directoryCleanupBlocked) return 0;
     ordered.sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
     const forget = dir => {
       for (const cached of this.confirmedDirectories) {

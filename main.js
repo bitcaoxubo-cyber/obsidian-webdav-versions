@@ -82,6 +82,108 @@ async function sha256(value) {
 module.exports = { bytes, text, byteLength, arrayBuffer, base64, fromBase64, randomUUID, digest, sha256 };
 
 },
+"confirmations":function(module,exports,require){
+'use strict';
+
+function groups(result) {
+  const c = result?.confirmations || {};
+  return { staleCopies: c.staleCopies || result?.staleCopies || [],
+    deletionConflicts: c.deletionConflicts || [], staleConflicts: c.staleConflicts || [] };
+}
+function confirmationKeys(result) {
+  const keys = new Set();
+  for (const [kind, entries] of Object.entries(groups(result))) {
+    for (const e of entries) keys.add(JSON.stringify([kind, e.path, e.hash || null, e.tips,
+      e.files?.map(f => [f.physical, f.hash]), e.selected || null]));
+  }
+  return keys;
+}
+function confirmationCount(result) {
+  return new Set(Object.values(groups(result)).flat().map(e => e.path)).size;
+}
+const decision = (kind, entry, selected) => ({ kind, entry, ...(selected ? { selected } : {}) });
+
+function createConfirmationModal({ Modal, Notice, Setting }) {
+  return class ConfirmationModal extends Modal {
+    constructor(plugin) { super(plugin.app); this.plugin = plugin; this.result = plugin.result; }
+    onOpen() { this.render(); }
+    onClose() { if (this.plugin.confirmationModal === this) this.plugin.confirmationModal = null; }
+    setResult(result) { this.result = result; this.render(); }
+    async execute(actions) {
+      if (this.plugin.busy) { new Notice('正在同步，请等待完成后再确认。'); return; }
+      if (!this.plugin.canRunDecisions(actions)) return;
+      this.close();
+      await this.plugin.run('decide', true, actions);
+    }
+    confirmBatch(label, actions, deleting = false) {
+      if (!actions.length) return;
+      this.contentEl.empty();
+      this.contentEl.createEl('p', { text: deleting
+        ? `将处理 ${actions.length} 个笔记，删除 ${actions.reduce((n, a) => n + (a.entry.files?.length || 1), 0)} 个本地文件，可在所选回收站恢复。内容或同步状态已变化的条目会跳过。`
+        : `将处理 ${actions.length} 个笔记。内容或同步状态已变化的条目会跳过。` });
+      new Setting(this.contentEl)
+        .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
+        .addButton(b => b.setButtonText(label).setCta().onClick(() => this.execute(actions)));
+    }
+    async openFile(name) {
+      const file = this.app.vault.getAbstractFileByPath(name);
+      if (file) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); }
+    }
+    render() {
+      this.titleEl.setText('同步确认');
+      this.contentEl.empty();
+      if (!this.result) { this.contentEl.createEl('p', { text: '先运行一次同步以读取当前状态。' }); return; }
+      const { staleCopies, deletionConflicts, staleConflicts } = groups(this.result);
+      const classified = new Set([...deletionConflicts, ...staleConflicts].map(e => e.path));
+      if (staleCopies.length) {
+        this.contentEl.createEl('h3', { text: `本机的旧副本 · ${staleCopies.length}` });
+        this.contentEl.createEl('p', { text: '其他设备已删除这些文件，本机仍留有内容相同的旧副本。请选择移入回收站，或保留并重新同步。' });
+        new Setting(this.contentEl)
+          .addButton(b => b.setButtonText('全部删除本机副本').onClick(() => this.confirmBatch('确认删除本机副本', staleCopies.map(e => decision('stale-delete', e)), true)))
+          .addButton(b => b.setButtonText('全部保留').onClick(() => this.confirmBatch('确认全部保留', staleCopies.map(e => decision('stale-keep', e)))));
+        for (const entry of staleCopies) new Setting(this.contentEl).setName(entry.path)
+          .addButton(b => b.setButtonText('删除本机副本').onClick(() => this.execute([decision('stale-delete', entry)])))
+          .addButton(b => b.setButtonText('保留并重新同步').onClick(() => this.execute([decision('stale-keep', entry)])));
+      }
+      if (deletionConflicts.length) {
+        this.contentEl.createEl('h3', { text: `删除冲突 · ${deletionConflicts.length}` });
+        const unchanged = deletionConflicts.filter(e => e.unchanged);
+        if (unchanged.length) new Setting(this.contentEl)
+          .addButton(b => b.setButtonText(`删除内容未变的 ${unchanged.length} 个`).onClick(() => this.confirmBatch('确认删除内容未变的文件', unchanged.map(e => decision('conflict-delete', e)), true)));
+        for (const entry of deletionConflicts) {
+          const row = new Setting(this.contentEl).setName(entry.path)
+            .setDesc(`${(entry.devices || []).join('、')} · ${entry.unchanged ? '内容与删除前相同' : '删除后有改动'}`)
+            .addButton(b => b.setButtonText('删除').onClick(() => this.execute([decision('conflict-delete', entry)])));
+          if (entry.files.length === 1) row.addButton(b => b.setButtonText('保留').onClick(() => this.execute([decision('resolve', entry, entry.files[0].physical)])));
+          else for (const f of entry.files) new Setting(this.contentEl).setName(f.physical)
+            .addButton(b => b.setButtonText('打开').onClick(() => this.openFile(f.physical)))
+            .addButton(b => b.setButtonText('保留此版本').onClick(() => this.execute([decision('resolve', entry, f.physical)])));
+        }
+      }
+      if (staleConflicts.length) {
+        this.contentEl.createEl('h3', { text: `旧版本冲突 · ${staleConflicts.length}` });
+        new Setting(this.contentEl).addButton(b => b.setButtonText('全部采用较新版本')
+          .onClick(() => this.confirmBatch('确认采用较新版本', staleConflicts.map(e => decision('resolve', e, e.selected)))));
+        for (const entry of staleConflicts) new Setting(this.contentEl).setName(entry.path).setDesc('较新版本：' + entry.selected)
+          .addButton(b => b.setButtonText('采用较新版本').onClick(() => this.execute([decision('resolve', entry, entry.selected)])));
+      }
+      const other = (this.result.conflictPaths || []).filter(p => !classified.has(p));
+      const deferred = this.result.deferredPaths || [];
+      if (other.length) {
+        this.contentEl.createEl('h3', { text: '其他冲突' });
+        this.contentEl.createEl('p', { text: '请比较正文与冲突副本，打开要保留的版本，运行“采用当前文件解决冲突”。' });
+        for (const name of other) new Setting(this.contentEl).setName(name).addButton(b => b.setButtonText('打开正文').onClick(() => this.openFile(name)));
+      }
+      if (deferred.length) this.contentEl.createEl('h3', { text: '等待同步' });
+      for (const name of deferred) this.contentEl.createEl('p', { text: name });
+      if (!confirmationCount(this.result) && !other.length && !deferred.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
+    }
+  };
+}
+
+module.exports = { createConfirmationModal, confirmationKeys, confirmationCount };
+
+},
 "dav":function(module,exports,require){
 // Adapted from the Basic authentication and Depth:0/1 PROPFIND workflow in
 // leopard530/obsidian-sync-webdav. Immutable storage, integrity checks, strict
@@ -443,6 +545,34 @@ class DavRemote {
 module.exports = { DavRemote, NAMESPACE, checkedRevision };
 
 },
+"deletion":function(module,exports,require){
+'use strict';
+
+// Desktop and mobile use the same Obsidian FileManager.trashFile contract; the
+// plugin's minimum supported host is 1.11.4. The method follows trashOption:
+// the inspected desktop 1.15.0 implementation routes "none" to vault.delete.
+// Its presence or name alone therefore cannot guarantee recoverable deletion.
+// This preflight neither changes preferences nor deletes anything. Call it
+// immediately before each actual trashFile call, including in a batch.
+function assertRecoverableTrash(app) {
+  if (typeof app?.fileManager?.trashFile !== 'function') {
+    throw new Error('当前 Obsidian 缺少回收站删除接口；请更新到 1.11.4 或更高版本。未执行删除。');
+  }
+  if (typeof app?.vault?.getConfig !== 'function') {
+    throw new Error('无法确认 Obsidian 回收站设置；未执行删除。');
+  }
+  let option;
+  try { option = app.vault.getConfig('trashOption'); }
+  catch { throw new Error('无法读取 Obsidian 回收站设置；未执行删除。'); }
+  if (option !== 'system' && option !== 'local') {
+    throw new Error('请先在 Obsidian 的文件与链接设置中选择系统回收站或 Obsidian 回收站，再确认删除。当前设置不支持可恢复删除。');
+  }
+  return option;
+}
+
+module.exports = { assertRecoverableTrash };
+
+},
 "engine":function(module,exports,require){
 'use strict';
 
@@ -455,8 +585,12 @@ const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
 const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, cleanedDirectories: 0, conflicts: 0, deferred: 0,
-  conflictPaths: [], deferredPaths: [],
+  conflictPaths: [], deferredPaths: [], stalePaths: [], staleCopies: [],
+  confirmations: { staleCopies: [], deletionConflicts: [], staleConflicts: [] },
+  appliedDecisions: 0, skippedDecisions: [], trashedFiles: 0, directoryCleanupBlocked: false,
   stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
+
+class ConfirmationChanged extends Error {}
 
 // Conflict names are valid physical paths, but are never valid logical note names.
 function checkPhysical(path) {
@@ -508,10 +642,17 @@ class SyncEngine {
     this.state = state;
     this.device = device;
     this.queue = Promise.resolve();
+    this.staleCopies = new Map();
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
   resolve(physicalPath) { return this._enqueue(() => this._run(physicalPath)); }
+  confirm(actions, callbacks = {}) {
+    return this._enqueue(() => {
+      if (!Array.isArray(actions)) throw new Error('Expected a list of confirmation actions');
+      return this._run(undefined, { full: true, decisions: actions, decisionCallbacks: callbacks });
+    });
+  }
 
   _enqueue(run) {
     const result = this.queue.then(run);
@@ -818,24 +959,187 @@ class SyncEngine {
     await this._checkpointProgress(s);
   }
 
-  async _resolve(s, selected, before, result) {
+  async _resolve(s, selected, before, result, expected = null) {
+    const reject = message => { throw expected ? new ConfirmationChanged(message) : new Error(message); };
     checkPhysical(selected);
     const binding = s.files.get(selected);
-    if (!binding) throw new Error('Select a synchronized member of a conflict and sync first');
+    if (!binding) reject('Select a synchronized member of a conflict and sync first');
     const path = binding.path;
     const reviewed = s.reviewed.get(path);
     const tips = before.tips.get(path) || [];
-    if (!reviewed || !sameIds(reviewed, tips)) throw new Error('Conflict changed; sync and review all versions first');
-    if (before.versions.get(path)?.size < 2) throw new Error('No unresolved conflict for ' + path);
+    if (!reviewed || !sameIds(reviewed, tips)) reject('Conflict changed; sync and review all versions first');
+    if (before.versions.get(path)?.size < 2) reject('No unresolved conflict for ' + path);
+    if (expected && (expected.path !== path || !sameIds(expected.tips, tips))) reject('Confirmation history changed');
     for (const [physical, v] of before.files) {
       if (v.path !== path || physical === selected) continue;
-      if (await this._hash(await this._read(physical)) !== v.blob) {
-        throw new Error('Another conflict copy was edited or removed; sync and review it first: ' + physical);
+      const data = await this._read(physical);
+      if (await this._hash(data) !== v.blob || (expected && this.local.guard && !this.local.guard(physical, data))) {
+        reject('Another conflict copy was edited or removed; sync and review it first: ' + physical);
       }
     }
     const data = await this._read(selected);
-    if (data === null) throw new Error('Selected conflict file is missing: ' + selected);
+    if (data === null) reject('Selected conflict file is missing: ' + selected);
+    if (expected) {
+      const chosen = expected.files.find(file => file.physical === selected);
+      if (!chosen || await this._hash(data) !== chosen.hash || (this.local.guard && !this.local.guard(selected, data))) {
+        reject('Selected conflict content changed after confirmation: ' + selected);
+      }
+    }
     await this._push(s, selected, path, tips, data, result);
+  }
+
+  _ancestorBlobs(s, ids) {
+    const blobs = new Set(), visited = new Set(), pending = ids.flatMap(id => s.revs.get(id).parents);
+    while (pending.length) {
+      const id = pending.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const rev = s.revs.get(id);
+      if (rev.blob !== null) blobs.add(rev.blob);
+      pending.push(...rev.parents);
+    }
+    return blobs;
+  }
+
+  _confirmationGroups(s, view, staleCopies = []) {
+    const groups = { staleCopies, deletionConflicts: [], staleConflicts: [] };
+    const filesByPath = new Map();
+    for (const [physical, binding] of view.files) {
+      if (!filesByPath.has(binding.path)) filesByPath.set(binding.path, []);
+      filesByPath.get(binding.path).push({ physical, hash: binding.blob });
+    }
+    for (const [path, versions] of view.versions) {
+      if (versions.size < 2) continue;
+      const files = (filesByPath.get(path) || []).sort((a, b) => a.physical < b.physical ? -1 : a.physical > b.physical ? 1 : 0);
+      const tips = [...view.tips.get(path)];
+      const devices = [...new Set(tips.map(id => s.revs.get(id)).filter(rev => rev.blob !== null).map(rev => rev.device))].sort();
+      if (versions.has(null)) {
+        const prior = this._ancestorBlobs(s, versions.get(null));
+        groups.deletionConflicts.push({ path, tips, files, devices,
+          unchanged: [...versions.keys()].filter(hash => hash !== null).every(hash => prior.has(hash)),
+          selected: files.find(file => file.physical === path)?.physical || files[0]?.physical });
+      } else if (versions.size === 2) {
+        const [a, b] = [...versions.keys()];
+        // Equal-content parallel heads are one displayed version. Any ancestry
+        // evidence in the opposite direction makes "newer" ambiguous.
+        const aBeforeB = versions.get(b).some(id => this._ancestorBlobs(s, [id]).has(a));
+        const bBeforeA = versions.get(a).some(id => this._ancestorBlobs(s, [id]).has(b));
+        if (aBeforeB !== bBeforeA) {
+          const newer = aBeforeB ? b : a;
+          groups.staleConflicts.push({ path, tips, files, devices, selected: files.find(file => file.hash === newer).physical });
+        }
+      }
+    }
+    for (const entries of [groups.deletionConflicts, groups.staleConflicts]) entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    return groups;
+  }
+
+  _sameDecisionFiles(actual, expected) {
+    if (!Array.isArray(actual) || actual.length !== expected.length || actual.some(file => !file || typeof file.physical !== 'string')) return false;
+    const ordered = [...actual].sort((a, b) => a.physical < b.physical ? -1 : a.physical > b.physical ? 1 : 0);
+    return ordered.every((file, index) => file.physical === expected[index].physical && file.hash === expected[index].hash);
+  }
+
+  async _decisionFileMatches(physical, hash) {
+    this.local.checkActive?.();
+    const data = await this._read(physical);
+    checkSize(data, physical);
+    if (data === null || await this._hash(data) !== hash) {
+      this.local.invalidate?.(physical);
+      return false;
+    }
+    return !this.local.guard || this.local.guard(physical, data);
+  }
+
+  async _confirm(s, before, actions, callbacks, result) {
+    const groups = this._confirmationGroups(s, before);
+    const deletions = new Map(groups.deletionConflicts.map(entry => [entry.path, entry]));
+    const older = new Map(groups.staleConflicts.map(entry => [entry.path, entry]));
+    const prepared = [], seen = new Set();
+    const skip = (kind, path, reason) => result.skippedDecisions.push({ kind, path, reason });
+    for (const action of actions) {
+      const kind = action?.kind, entry = action?.entry, path = entry?.path;
+      if (!['stale-delete', 'stale-keep', 'conflict-delete', 'resolve'].includes(kind) || typeof path !== 'string') {
+        skip(kind || 'unknown', typeof path === 'string' ? path : null, 'invalid-entry'); continue;
+      }
+      try { safePath(path); } catch { skip(kind, path, 'invalid-entry'); continue; }
+      if (seen.has(path)) { skip(kind, path, 'duplicate'); continue; }
+      if (!Array.isArray(entry.tips) || !sameIds(entry.tips, before.tips.get(path) || [])) {
+        skip(kind, path, 'remote-changed'); continue;
+      }
+      let canonical, files, selected;
+      if (kind === 'stale-delete' || kind === 'stale-keep') {
+        const versions = before.versions.get(path);
+        if (s.files.has(path) || s.absent.has(path) || versions?.size !== 1 || !versions.has(null) ||
+            typeof entry.hash !== 'string' || !/^[a-f0-9]{64}$/.test(entry.hash) ||
+            !(before.byPath.get(path) || []).some(rev => rev.blob === entry.hash)) {
+          skip(kind, path, 'baseline-changed'); continue;
+        }
+        canonical = { path, hash: entry.hash, tips: [...before.tips.get(path)] };
+        files = [{ physical: path, hash: entry.hash }];
+      } else {
+        canonical = deletions.get(path) || (kind === 'resolve' ? older.get(path) : null);
+        if (!canonical || !this._sameDecisionFiles(entry.files, canonical.files)) {
+          skip(kind, path, 'baseline-changed'); continue;
+        }
+        files = canonical.files;
+        if (files.some(file => { const base = s.files.get(file.physical); return !base || base.path !== path || base.blob !== file.hash; })) {
+          skip(kind, path, 'baseline-changed'); continue;
+        }
+        if (kind === 'resolve') {
+          selected = action.selected ?? entry.selected ?? canonical.selected;
+          if (!files.some(file => file.physical === selected) || (older.has(path) && selected !== canonical.selected)) {
+            skip(kind, path, 'invalid-selection'); continue;
+          }
+        }
+      }
+      const deleting = kind === 'stale-delete' || kind === 'conflict-delete';
+      if (deleting && (typeof callbacks.canTrash !== 'function' || typeof callbacks.trash !== 'function')) {
+        skip(kind, path, 'trash-unavailable'); continue;
+      }
+      let valid = true;
+      for (const file of files) {
+        if (!await this._decisionFileMatches(file.physical, file.hash) ||
+            (deleting && await callbacks.canTrash(file.physical, file.hash) !== true)) { valid = false; break; }
+      }
+      if (!valid) { skip(kind, path, 'local-changed'); continue; }
+      seen.add(path); prepared.push({ kind, path, entry: canonical, files, selected });
+    }
+
+    // A clean incremental poll can discover equal-content heads without yet
+    // acknowledging them locally. Fresh byte checks above permit that binding
+    // now; persist all such parents before the first recoverable trash call.
+    if (prepared.some(action => action.kind === 'conflict-delete')) {
+      for (const action of prepared) if (action.kind === 'conflict-delete') {
+        for (const file of action.files) this._bind(s, file.physical, before.files.get(file.physical));
+      }
+      await this._save(s);
+    }
+    for (const action of prepared) {
+      const { kind, path, entry, files, selected } = action;
+      this.local.checkActive?.();
+      if (kind === 'stale-keep') {
+        if (!await this._decisionFileMatches(path, entry.hash)) { skip(kind, path, 'local-changed'); continue; }
+        this.keep.add(path);
+      } else if (kind === 'resolve') {
+        try { await this._resolve(s, selected, before, result, entry); }
+        catch (error) {
+          if (!(error instanceof ConfirmationChanged)) throw error;
+          skip(kind, path, 'local-or-review-changed'); continue;
+        }
+      } else {
+        let applied = true;
+        for (const file of files) {
+          this.local.checkActive?.();
+          const trashed = await callbacks.trash(file.physical, file.hash);
+          if (trashed === true) result.trashedFiles++;
+          this.local.invalidate?.(file.physical);
+          if (trashed !== true || await this._read(file.physical) !== null) { applied = false; break; }
+        }
+        if (!applied) { skip(kind, path, 'local-changed'); continue; }
+      }
+      result.appliedDecisions++;
+    }
   }
 
   * _batches(items) {
@@ -852,8 +1156,38 @@ class SyncEngine {
     if (batch.length) yield batch;
   }
 
+  async _recognizeUnbound(s, before, physical, hash) {
+    if (hash === null || isConflictPath(physical) || s.absent.has(physical)) return false;
+    const history = before.byPath.get(physical);
+    if (!history) return false;
+    const remote = before.files.get(physical);
+    if (remote && hash === remote.blob) {
+      if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
+      return true;
+    }
+    const versions = before.versions.get(physical);
+    const deleted = versions?.size === 1 && versions.has(null);
+    if (deleted && this.keep.has(physical)) return false;
+    const earlier = history.filter(revision => revision.blob === hash).map(revision => revision.id).sort();
+    if (!earlier.length) return false;
+    if (deleted) {
+      // Lost local state is not consent to delete an unchanged historical copy,
+      // nor evidence of a new edit. Keep it unbound until the user decides.
+      this.nextStaleCopies.set(physical, { path: physical, hash, tips: [...before.tips.get(physical)] });
+    } else if (this._bind(s, physical, { path: physical, blob: hash, parents: earlier })) {
+      await this._checkpointProgress(s);
+    }
+    return true;
+  }
+
   async _capture(s, before, result, deferred) {
-    const listed = this.full ? await this.local.list() : [...this.dirty];
+    const changed = new Set([...this.dirty, ...this.keep]);
+    // Pending copies have no file binding. Revisit them when the remote target
+    // changes, but retain their UI entries on otherwise clean incremental polls.
+    if (!this.full) for (const [physical, entry] of this.staleCopies) {
+      if (!sameIds(entry.tips, before.tips.get(physical) || [])) changed.add(physical);
+    }
+    const listed = this.full ? await this.local.list() : [...changed];
     const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
     const sizes = new Map();
     const sizeOf = async name => {
@@ -882,8 +1216,15 @@ class SyncEngine {
     if (provisional.length) project([...s.revs.values(), ...provisional]);
     const candidates = [];
     for (const physical of paths) {
+      this.nextStaleCopies.delete(physical);
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
+      // Only history-bearing, unbound paths need this classification. Ordinary
+      // initial uploads keep the original read path and accounting unchanged.
+      if (!base && !isConflictPath(physical) && !s.absent.has(physical) && before.byPath.has(physical)) {
+        const hash = await this._observedHash(physical);
+        if (hash === null || await this._recognizeUnbound(s, before, physical, hash)) continue;
+      }
       const size = await sizeOf(physical);
       candidates.push({ physical, base, size: size === undefined ? MAX_BYTES : size === null ? 0 : size });
     }
@@ -909,7 +1250,12 @@ class SyncEngine {
             if (remote && hash === remote.blob) {
               if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
             } else if (isConflictPath(physical)) deferred.add(physical);
-            else pushes.push({ ...row, path: physical, parents: s.absent.get(physical) || [] });
+            else if (!await this._recognizeUnbound(s, before, physical, hash)) {
+              const versions = before.versions.get(physical);
+              const keepDeleted = this.keep.has(physical) && versions?.size === 1 && versions.has(null);
+              pushes.push({ ...row, path: physical,
+                parents: s.absent.get(physical) || (keepDeleted ? before.tips.get(physical) : []) });
+            }
           }
         }
         // Content-addressed blobs are safe to pre-upload. Revision publication,
@@ -1050,6 +1396,8 @@ class SyncEngine {
     this.observed = new Map();
     this.full = selected !== undefined || options.full !== false || options.deep === true;
     this.dirty = new Set(options.dirty || []);
+    this.keep = new Set(options.keep || []);
+    this.nextStaleCopies = this.full ? new Map() : new Map(this.staleCopies);
     result.stats.full = Number(this.full);
     this.local.stats = this.state.stats = result.stats;
     if (this.remote.setStats) this.remote.setStats(result.stats);
@@ -1074,8 +1422,9 @@ class SyncEngine {
     if (selected !== undefined) {
       await this._resolve(s, selected, before, result);
     }
+    if (options.decisions) await this._confirm(s, before, options.decisions, options.decisionCallbacks || {}, result);
     const deferred = new Set();
-    const captureView = selected === undefined ? before : snapshot(s.revs);
+    const captureView = selected === undefined && !options.decisions ? before : snapshot(s.revs);
     const capturedRevisionCount = s.revs.size;
     await this._capture(s, captureView, result, deferred);
     const after = s.revs.size === capturedRevisionCount ? captureView : snapshot(s.revs);
@@ -1113,6 +1462,17 @@ class SyncEngine {
     // File transactions, receipts and deletion baselines must be durable before
     // cosmetic directory cleanup. A failed cleanup is safe to retry in full.
     await this._pruneDirectories(s, after, deferred, result);
+    result.directoryCleanupBlocked = !!this.local.directoryCleanupBlocked;
+    for (const [path, entry] of this.nextStaleCopies) {
+      const versions = after.versions.get(path);
+      if (s.files.has(path) || versions?.size !== 1 || !versions.has(null)) this.nextStaleCopies.delete(path);
+      else entry.tips = [...after.tips.get(path)];
+    }
+    this.staleCopies = this.nextStaleCopies;
+    result.staleCopies = [...this.staleCopies.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+      .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
+    result.stalePaths = result.staleCopies.map(entry => entry.path);
+    result.confirmations = this._confirmationGroups(s, after, result.staleCopies);
     result.stats.durationMs = Date.now() - started;
     return result;
   }
@@ -1932,6 +2292,7 @@ class MobileVault extends AdapterIO {
     this.cacheLoaded = false;
     this.cacheDirty = false;
     this.deep = false;
+    this.directoryCleanupBlocked = false;
   }
   path(name) {
     if (typeof name !== 'string' || !name || /[\\\x00-\x1f]/.test(name) || /^[A-Za-z]:/.test(name) ||
@@ -1954,6 +2315,7 @@ class MobileVault extends AdapterIO {
   beginRound({ deep = false } = {}) {
     this.statHints.clear();
     this.deep = deep;
+    this.directoryCleanupBlocked = false;
   }
   async loadCache() {
     if (this.cacheLoaded) return;
@@ -2043,6 +2405,12 @@ class MobileVault extends AdapterIO {
   async pruneEmptyDirectories(directories) {
     const ordered = [...new Set(directories)];
     for (const dir of ordered) this.path(dir); // Never accept root, hidden or configuration paths.
+    // Some shipped Capacitor adapters ignore recursive=false. Checking emptiness
+    // before a recursive removal cannot protect a file created in between.
+    // Keep empty folders unless this exact adapter explicitly promises atomic,
+    // nonrecursive removal; the native mobile adapter does not currently do so.
+    this.directoryCleanupBlocked = ordered.length > 0 && this.adapter.supportsAtomicEmptyDirectoryRemoval !== true;
+    if (this.directoryCleanupBlocked) return 0;
     ordered.sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
     const forget = dir => {
       for (const cached of this.confirmedDirectories) {
@@ -2213,11 +2581,14 @@ module.exports = { nodeRequest };
 // Adapted from leopard530/obsidian-sync-webdav: onload commands, ribbon,
 // status bar and debounced vault events. Every trigger now uses the same engine.
 const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platform, requestUrl } = require('obsidian');
-const { text } = require('./bytes');
+const { text, sha256 } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
 const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
+const { assertRecoverableTrash } = require('./deletion');
+const { createConfirmationModal, confirmationKeys, confirmationCount } = require('./confirmations');
+const ConfirmationModal = createConfirmationModal({ Modal, Notice, Setting });
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');
@@ -2233,25 +2604,6 @@ class ResolveModal extends Modal {
   }
 }
 
-class ConflictsModal extends Modal {
-  constructor(app, result) { super(app); this.result = result; }
-  onOpen() {
-    this.titleEl.setText('同步冲突');
-    if (!this.result) { this.contentEl.createEl('p', { text: '先运行一次同步以读取当前冲突。' }); return; }
-    const conflicts = this.result.conflictPaths || [];
-    const deferred = this.result.deferredPaths || [];
-    if (!conflicts.length && !deferred.length) this.contentEl.createEl('p', { text: '最近一次同步没有待处理的文件。' });
-    else this.contentEl.createEl('p', { text: '先比较正文与同目录的 sync-conflict 副本。打开要保留的版本后，运行「采用当前文件解决冲突」。若冲突来自另一台设备的删除，列表中只有仍有内容的版本。' });
-    for (const name of conflicts) {
-      new Setting(this.contentEl).setName(name).addButton(b => b.setButtonText('打开正文').onClick(async () => {
-        const file = this.app.vault.getAbstractFileByPath(name);
-        if (file) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); }
-      }));
-    }
-    for (const name of deferred) this.contentEl.createEl('p', { text: '等待同步：' + name });
-  }
-}
-
 class SyncSettings extends PluginSettingTab {
   constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
   display() {
@@ -2259,7 +2611,8 @@ class SyncSettings extends PluginSettingTab {
     el.empty();
     const p = this.plugin;
     const draft = { ...p.settings };
-    new Setting(el).setName('飞牛 WebDAV 版本同步').setHeading();
+    new Setting(el).setName('飞牛 WebDAV 版本同步 · ' + p.manifest.version)
+      .setDesc('更新请用 BRAT 或覆盖 main.js 与 manifest.json，不要卸载重装').setHeading();
     new Setting(el).setName('同步状态').setDesc(p.lastError || p.statusMessage || '就绪')
       .addButton(b => b.setButtonText('立即同步').onClick(async () => { await p.run('sync', true); this.display(); }))
       .addButton(b => b.setButtonText('查看详情').onClick(() => p.openStatus()));
@@ -2289,6 +2642,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.settings = Object.assign({}, defaults, await this.loadData());
     this.stopped = false;
     this.ready = false;
+    this.confirmationModal = null;
+    this.lastPromptKeys = new Set();
     this.scheduler = new SyncScheduler({ mobile: Platform.isMobile,
       setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: timer => window.clearTimeout(timer),
       run: () => this.autoSync(), enabled: () => this.ready && this.settings.auto && !this.stopped, active: () => this.isActive() });
@@ -2299,7 +2654,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.addCommand({ id: 'sync-now', name: '立即同步', callback: () => this.run('sync', true) });
     this.addCommand({ id: 'sync-deep', name: '深度校验同步', callback: () => this.run('deep', true) });
     this.addCommand({ id: 'sync-status', name: '查看同步状态', callback: () => this.openStatus() });
-    this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => new ConflictsModal(this.app, this.result).open() });
+    this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => this.openConfirmations() });
     this.addCommand({ id: 'resolve-current', name: '采用当前文件解决冲突', checkCallback: checking => {
       const file = this.app.workspace.getActiveFile();
       if (!file) return false;
@@ -2342,6 +2697,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       this.settings = { ...draft };
       this.engine = null;
       this.result = null;
+      this.confirmationModal?.close();
+      this.lastPromptKeys = new Set();
       this.lastError = '';
       this.showStatus('就绪');
       this.scheduler.reset();
@@ -2379,6 +2736,60 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   schedule(delay) { this.scheduler.schedule(delay); }
   autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) return this.run('sync', false); }
   isActive() { return !this.stopped && (!Platform.isMobile || document.visibilityState !== 'hidden'); }
+  openConfirmations() {
+    if (this.confirmationModal) return;
+    this.lastPromptKeys = confirmationKeys(this.result);
+    this.confirmationModal = new ConfirmationModal(this);
+    this.confirmationModal.open();
+  }
+  updateConfirmations() {
+    const keys = confirmationKeys(this.result);
+    if (this.confirmationModal) {
+      this.lastPromptKeys = keys;
+      this.confirmationModal.setResult(this.result);
+    } else if ([...keys].some(key => !this.lastPromptKeys.has(key))) this.openConfirmations();
+  }
+  canRunDecisions(actions) {
+    try {
+      if (!this.isActive()) throw new Error('请保持 Obsidian 在前台再确认。');
+      if (actions.some(a => ['stale-delete', 'conflict-delete'].includes(a.kind))) assertRecoverableTrash(this.app);
+      return true;
+    } catch (error) { new Notice(error.message, 10000); return false; }
+  }
+  fileStamp(file) {
+    const s = file?.stat;
+    return s && Number.isFinite(s.mtime) && Number.isFinite(s.ctime) && Number.isSafeInteger(s.size)
+      ? JSON.stringify([s.mtime, s.ctime, s.size]) : null;
+  }
+  trashTokenCurrent(token) {
+    return this.isActive() && this.app.vault.getAbstractFileByPath(token.physical) === token.file &&
+      token.file.path === token.physical && this.fileStamp(token.file) === token.stamp &&
+      this.scheduler.dirty.get(token.physical) === token.generation && this.editorMatches(token.physical, token.data);
+  }
+  async trashToken(physical, hash) {
+    const file = this.app.vault.getAbstractFileByPath(physical);
+    if (!file || file.path !== physical || Array.isArray(file.children)) return null;
+    const stamp = this.fileStamp(file);
+    if (stamp === null) return null;
+    const generation = this.scheduler.dirty.get(physical);
+    const data = await this.getEngine().local.read(physical);
+    if (data === null || await sha256(data) !== hash) return null;
+    const token = { physical, file, stamp, generation, data };
+    return this.trashTokenCurrent(token) ? token : null;
+  }
+  async canTrash(physical, hash) { return !!await this.trashToken(physical, hash); }
+  async trashConfirmed(physical, hash) {
+    const token = await this.trashToken(physical, hash);
+    // Check again after the await: editor changes, renames, a new file object,
+    // host stat updates and newer event generations invalidate this permission.
+    if (!token || !this.trashTokenCurrent(token)) return false;
+    // Keep the preference check adjacent to the actual API call. A batch must
+    // stop using trashFile if the user switches to permanent deletion midway.
+    assertRecoverableTrash(this.app);
+    await this.app.fileManager.trashFile(token.file);
+    this.getEngine().local.invalidate?.(physical);
+    return true;
+  }
   openStatus() {
     const modal = new Modal(this.app);
     modal.titleEl.setText('飞牛同步状态');
@@ -2388,6 +2799,9 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
       if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
+      const waiting = confirmationCount(r);
+      if (waiting) modal.contentEl.createEl('p', { text: `有 ${waiting} 个文件等待确认。请打开“查看同步冲突”处理。` });
+      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '为保护目录内新写入的内容，已保留手机空文件夹；文件删除同步不受影响。' });
     }
     if (this.result?.stats) {
       const s = this.result.stats;
@@ -2404,6 +2818,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   async run(mode, notify, file) {
     if (!this.isActive() || !this.ready || this.configuring) return;
+    if (mode === 'decide' && !this.canRunDecisions(file)) return;
     const lock = globalThis[activeVaults] ||= new Set();
     const key = this.app.vault.adapter;
     if (lock.has(key)) { if (notify) new Notice('正在同步，请等待完成'); return; }
@@ -2417,14 +2832,21 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
+      const r = mode === 'decide' ? await engine.confirm(file, {
+        canTrash: (physical, hash) => this.canTrash(physical, hash),
+        trash: (physical, hash) => this.trashConfirmed(physical, hash),
+      }) : mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
       this.scheduler.complete(ticket, r);
       if (r.stats) r.stats.pollIntervalMs = this.scheduler.pollIntervalMs;
       this.result = r;
       this.lastError = '';
-      const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
+      const waiting = confirmationCount(r);
+      const message = waiting ? `有 ${waiting} 个文件等待确认` : r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
       if (!this.stopped) this.showStatus(message);
       if (notify && !this.stopped) new Notice(message);
+      if (mode === 'decide' && !this.stopped) new Notice(`${r.trashedFiles ? `已将 ${r.trashedFiles} 个文件移入回收站；` : ''}已处理 ${r.appliedDecisions || 0} 个，跳过 ${(r.skippedDecisions || []).length} 个。跳过的条目可能已有内容、编辑器或同步状态变化。`, 10000);
+      if (!this.stopped) this.updateConfirmations();
+      return r;
     } catch (err) {
       this.scheduler.fail(ticket);
       if (this.stopped) return;
@@ -2436,6 +2858,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   onunload() {
     this.stopped = true;
+    this.confirmationModal?.close();
     this.scheduler.stop();
   }
 };

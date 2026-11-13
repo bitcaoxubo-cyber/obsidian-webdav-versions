@@ -1,0 +1,313 @@
+{
+  "baselineCommit": "19955ebf3ed0089b893e0ca0a3e70a57b08a096c",
+  "baselineVersion": "0.4.0-beta.3",
+  "provenance": "Untouched 19955eb engine and DiskState generated three-device resurrection; deterministic protocol UUID source only. The exact resulting payload was additionally written through 19955eb MobileState to form both checksummed slots.",
+  "endpoint": "https://example.test/e2-lost-state/",
+  "username": "u",
+  "expected": {
+    "resurrection": {
+      "uploaded": 4,
+      "conflicts": 4
+    },
+    "deletionConflicts": [
+      "a.md",
+      "b.md",
+      "c.md"
+    ],
+    "staleConflict": "d.md",
+    "latestContent": "d edited on the Mac",
+    "finalFiles": [
+      "d.md",
+      "e.md"
+    ]
+  },
+  "revisions": [
+    {
+      "path": "a.md",
+      "parents": [],
+      "blob": "4f14ae3f920245e2a4fe1c42acdcc86c2f8dc6b1647afd8dfe6c446bb5ef8793",
+      "device": "Mac",
+      "nonce": "00000000-0000-4000-8000-000000000006",
+      "id": "d668b82ff48039fc9a871c369b27cb882bb8b277bc1610dd0ff705ec591a6733"
+    },
+    {
+      "path": "b.md",
+      "parents": [],
+      "blob": "b486a455a45a1c13b2d408576a641baa6e23641182f15fa0b0511383b21cf212",
+      "device": "Mac",
+      "nonce": "00000000-0000-4000-8000-000000000008",
+      "id": "9e53ffd639232240698a1db154963c64535c2092b6fd30fc6ebd047600a0b030"
+    },
+    {
+      "path": "c.md",
+      "parents": [],
+      "blob": "097c735247adbb72eec09c3bee8c0d176acec02001a362280623d3190ea77b38",
+      "device": "Mac",
+      "nonce": "00000000-0000-4000-8000-00000000000a",
+      "id": "3149269e9fd32f04993296535242dce2cc3eafaaac5a117d4b042b7bb27ac353"
+    },
+    {
+      "path": "d.md",
+      "parents": [],
+      "blob": "b8af51b809fa21ebb825582f42c94be140f8ed148102694d1b32e2618a33d536",
+      "device": "Mac",
+      "nonce": "00000000-0000-4000-8000-00000000000c",
+      "id": "8d49b2aaa8a55e1fd524def42ec54706904d4387f97d0a8af7b8a2cd966c6580"
+    },
+    {
+      "path": "e.md",
+      "parents": [],
+      "blob": "2394e877026c398dc8167f26c46794f9e6f536a9eda25abf545ea8853b82e481",
+      "device": "Mac",
+      "nonce": "00000000-0000-4000-8000-00000000000e",
+      "id": "9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87"
+    },
+    {
+      "path": "a.md",
+      "parents": [
+        "d668b82ff48039fc9a871c369b27cb882bb8b277bc1610dd0ff705ec591a6733"
+      ],
+      "blob": null,
+      "device": "iPhone",
+      "nonce": "00000000-0000-4000-8000-00000000001a",
+      "id": "2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a"
+    },
+    {
+      "path": "b.md",
+      "parents": [
+        "9e53ffd639232240698a1db154963c64535c2092b6fd30fc6ebd047600a0b030"
+      ],
+      "blob": null,
+      "device": "iPhone",
+      "nonce": "00000000-0000-4000-8000-00000000001c",
+      "id": "f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8"
+    },
+    {
+      "path": "c.md",
+      "parents": [
+        "3149269e9fd32f04993296535242dce2cc3eafaaac5a117d4b042b7bb27ac353"
+      ],
+      "blob": null,
+      "device": "iPhone",
+      "nonce": "00000000-0000-4000-8000-00000000001e",
+      "id": "99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c"
+    },
+    {
+      "path": "d.md",
+      "parents": [
+        "8d49b2aaa8a55e1fd524def42ec54706904d4387f97d0a8af7b8a2cd966c6580"
+      ],
+      "blob": "a14bdd3b665ced01c6064feca15570be35a09af41bcff11009b693e066069687",
+      "device": "Mac",
+      "nonce": "00000000-0000-4000-8000-000000000023",
+      "id": "0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650"
+    },
+    {
+      "path": "a.md",
+      "parents": [],
+      "blob": "4f14ae3f920245e2a4fe1c42acdcc86c2f8dc6b1647afd8dfe6c446bb5ef8793",
+      "device": "PC",
+      "nonce": "00000000-0000-4000-8000-00000000002c",
+      "id": "481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf"
+    },
+    {
+      "path": "b.md",
+      "parents": [],
+      "blob": "b486a455a45a1c13b2d408576a641baa6e23641182f15fa0b0511383b21cf212",
+      "device": "PC",
+      "nonce": "00000000-0000-4000-8000-00000000002e",
+      "id": "6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f"
+    },
+    {
+      "path": "c.md",
+      "parents": [],
+      "blob": "097c735247adbb72eec09c3bee8c0d176acec02001a362280623d3190ea77b38",
+      "device": "PC",
+      "nonce": "00000000-0000-4000-8000-000000000030",
+      "id": "246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1"
+    },
+    {
+      "path": "d.md",
+      "parents": [],
+      "blob": "b8af51b809fa21ebb825582f42c94be140f8ed148102694d1b32e2618a33d536",
+      "device": "PC",
+      "nonce": "00000000-0000-4000-8000-000000000032",
+      "id": "cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc"
+    }
+  ],
+  "blobs": [
+    {
+      "hash": "4f14ae3f920245e2a4fe1c42acdcc86c2f8dc6b1647afd8dfe6c446bb5ef8793",
+      "base64": "Y29udGVudCBvZiBhLm1k"
+    },
+    {
+      "hash": "b486a455a45a1c13b2d408576a641baa6e23641182f15fa0b0511383b21cf212",
+      "base64": "Y29udGVudCBvZiBiLm1k"
+    },
+    {
+      "hash": "097c735247adbb72eec09c3bee8c0d176acec02001a362280623d3190ea77b38",
+      "base64": "Y29udGVudCBvZiBjLm1k"
+    },
+    {
+      "hash": "b8af51b809fa21ebb825582f42c94be140f8ed148102694d1b32e2618a33d536",
+      "base64": "Y29udGVudCBvZiBkLm1k"
+    },
+    {
+      "hash": "2394e877026c398dc8167f26c46794f9e6f536a9eda25abf545ea8853b82e481",
+      "base64": "Y29udGVudCBvZiBlLm1k"
+    },
+    {
+      "hash": "a14bdd3b665ced01c6064feca15570be35a09af41bcff11009b693e066069687",
+      "base64": "ZCBlZGl0ZWQgb24gdGhlIE1hYw=="
+    }
+  ],
+  "vaultFiles": [
+    {
+      "path": "a.md",
+      "base64": "Y29udGVudCBvZiBhLm1k"
+    },
+    {
+      "path": "b.md",
+      "base64": "Y29udGVudCBvZiBiLm1k"
+    },
+    {
+      "path": "c.md",
+      "base64": "Y29udGVudCBvZiBjLm1k"
+    },
+    {
+      "path": "d (sync-conflict PC cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc).md",
+      "base64": "Y29udGVudCBvZiBkLm1k"
+    },
+    {
+      "path": "d.md",
+      "base64": "ZCBlZGl0ZWQgb24gdGhlIE1hYw=="
+    },
+    {
+      "path": "e.md",
+      "base64": "Y29udGVudCBvZiBlLm1k"
+    }
+  ],
+  "diskState": {
+    "version": 1,
+    "known": [
+      "d668b82ff48039fc9a871c369b27cb882bb8b277bc1610dd0ff705ec591a6733",
+      "9e53ffd639232240698a1db154963c64535c2092b6fd30fc6ebd047600a0b030",
+      "3149269e9fd32f04993296535242dce2cc3eafaaac5a117d4b042b7bb27ac353",
+      "8d49b2aaa8a55e1fd524def42ec54706904d4387f97d0a8af7b8a2cd966c6580",
+      "9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87",
+      "2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a",
+      "f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8",
+      "99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c",
+      "0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650",
+      "481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf",
+      "6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f",
+      "246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1",
+      "cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc"
+    ],
+    "files": [
+      [
+        "a.md",
+        {
+          "path": "a.md",
+          "blob": "4f14ae3f920245e2a4fe1c42acdcc86c2f8dc6b1647afd8dfe6c446bb5ef8793",
+          "parents": [
+            "481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf"
+          ]
+        }
+      ],
+      [
+        "b.md",
+        {
+          "path": "b.md",
+          "blob": "b486a455a45a1c13b2d408576a641baa6e23641182f15fa0b0511383b21cf212",
+          "parents": [
+            "6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f"
+          ]
+        }
+      ],
+      [
+        "c.md",
+        {
+          "path": "c.md",
+          "blob": "097c735247adbb72eec09c3bee8c0d176acec02001a362280623d3190ea77b38",
+          "parents": [
+            "246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1"
+          ]
+        }
+      ],
+      [
+        "d.md",
+        {
+          "path": "d.md",
+          "blob": "a14bdd3b665ced01c6064feca15570be35a09af41bcff11009b693e066069687",
+          "parents": [
+            "0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650"
+          ]
+        }
+      ],
+      [
+        "e.md",
+        {
+          "path": "e.md",
+          "blob": "2394e877026c398dc8167f26c46794f9e6f536a9eda25abf545ea8853b82e481",
+          "parents": [
+            "9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87"
+          ]
+        }
+      ],
+      [
+        "d (sync-conflict PC cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc).md",
+        {
+          "path": "d.md",
+          "blob": "b8af51b809fa21ebb825582f42c94be140f8ed148102694d1b32e2618a33d536",
+          "parents": [
+            "cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc"
+          ]
+        }
+      ]
+    ],
+    "reviewed": [
+      [
+        "a.md",
+        [
+          "2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a",
+          "481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf"
+        ]
+      ],
+      [
+        "b.md",
+        [
+          "6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f",
+          "f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8"
+        ]
+      ],
+      [
+        "c.md",
+        [
+          "246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1",
+          "99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c"
+        ]
+      ],
+      [
+        "d.md",
+        [
+          "0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650",
+          "cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc"
+        ]
+      ]
+    ],
+    "absent": [],
+    "pending": null,
+    "receiptSequence": 6
+  },
+  "mobileSnapshots": [
+    {
+      "name": "state-0.json",
+      "text": "{\"sequence\":1,\"payload\":\"{\\\"version\\\":1,\\\"known\\\":[\\\"d668b82ff48039fc9a871c369b27cb882bb8b277bc1610dd0ff705ec591a6733\\\",\\\"9e53ffd639232240698a1db154963c64535c2092b6fd30fc6ebd047600a0b030\\\",\\\"3149269e9fd32f04993296535242dce2cc3eafaaac5a117d4b042b7bb27ac353\\\",\\\"8d49b2aaa8a55e1fd524def42ec54706904d4387f97d0a8af7b8a2cd966c6580\\\",\\\"9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87\\\",\\\"2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a\\\",\\\"f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8\\\",\\\"99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c\\\",\\\"0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650\\\",\\\"481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf\\\",\\\"6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f\\\",\\\"246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1\\\",\\\"cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc\\\"],\\\"files\\\":[[\\\"a.md\\\",{\\\"path\\\":\\\"a.md\\\",\\\"blob\\\":\\\"4f14ae3f920245e2a4fe1c42acdcc86c2f8dc6b1647afd8dfe6c446bb5ef8793\\\",\\\"parents\\\":[\\\"481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf\\\"]}],[\\\"b.md\\\",{\\\"path\\\":\\\"b.md\\\",\\\"blob\\\":\\\"b486a455a45a1c13b2d408576a641baa6e23641182f15fa0b0511383b21cf212\\\",\\\"parents\\\":[\\\"6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f\\\"]}],[\\\"c.md\\\",{\\\"path\\\":\\\"c.md\\\",\\\"blob\\\":\\\"097c735247adbb72eec09c3bee8c0d176acec02001a362280623d3190ea77b38\\\",\\\"parents\\\":[\\\"246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1\\\"]}],[\\\"d.md\\\",{\\\"path\\\":\\\"d.md\\\",\\\"blob\\\":\\\"a14bdd3b665ced01c6064feca15570be35a09af41bcff11009b693e066069687\\\",\\\"parents\\\":[\\\"0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650\\\"]}],[\\\"e.md\\\",{\\\"path\\\":\\\"e.md\\\",\\\"blob\\\":\\\"2394e877026c398dc8167f26c46794f9e6f536a9eda25abf545ea8853b82e481\\\",\\\"parents\\\":[\\\"9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87\\\"]}],[\\\"d (sync-conflict PC cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc).md\\\",{\\\"path\\\":\\\"d.md\\\",\\\"blob\\\":\\\"b8af51b809fa21ebb825582f42c94be140f8ed148102694d1b32e2618a33d536\\\",\\\"parents\\\":[\\\"cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc\\\"]}]],\\\"reviewed\\\":[[\\\"a.md\\\",[\\\"2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a\\\",\\\"481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf\\\"]],[\\\"b.md\\\",[\\\"6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f\\\",\\\"f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8\\\"]],[\\\"c.md\\\",[\\\"246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1\\\",\\\"99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c\\\"]],[\\\"d.md\\\",[\\\"0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650\\\",\\\"cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc\\\"]]],\\\"absent\\\":[],\\\"pending\\\":null,\\\"receiptSequence\\\":6}\",\"hash\":\"86942167120c60a538207c4ec1f4b5500ba193b83096aac6f4c785a128d822c7\"}"
+    },
+    {
+      "name": "state-1.json",
+      "text": "{\"sequence\":2,\"payload\":\"{\\\"version\\\":1,\\\"known\\\":[\\\"d668b82ff48039fc9a871c369b27cb882bb8b277bc1610dd0ff705ec591a6733\\\",\\\"9e53ffd639232240698a1db154963c64535c2092b6fd30fc6ebd047600a0b030\\\",\\\"3149269e9fd32f04993296535242dce2cc3eafaaac5a117d4b042b7bb27ac353\\\",\\\"8d49b2aaa8a55e1fd524def42ec54706904d4387f97d0a8af7b8a2cd966c6580\\\",\\\"9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87\\\",\\\"2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a\\\",\\\"f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8\\\",\\\"99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c\\\",\\\"0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650\\\",\\\"481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf\\\",\\\"6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f\\\",\\\"246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1\\\",\\\"cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc\\\"],\\\"files\\\":[[\\\"a.md\\\",{\\\"path\\\":\\\"a.md\\\",\\\"blob\\\":\\\"4f14ae3f920245e2a4fe1c42acdcc86c2f8dc6b1647afd8dfe6c446bb5ef8793\\\",\\\"parents\\\":[\\\"481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf\\\"]}],[\\\"b.md\\\",{\\\"path\\\":\\\"b.md\\\",\\\"blob\\\":\\\"b486a455a45a1c13b2d408576a641baa6e23641182f15fa0b0511383b21cf212\\\",\\\"parents\\\":[\\\"6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f\\\"]}],[\\\"c.md\\\",{\\\"path\\\":\\\"c.md\\\",\\\"blob\\\":\\\"097c735247adbb72eec09c3bee8c0d176acec02001a362280623d3190ea77b38\\\",\\\"parents\\\":[\\\"246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1\\\"]}],[\\\"d.md\\\",{\\\"path\\\":\\\"d.md\\\",\\\"blob\\\":\\\"a14bdd3b665ced01c6064feca15570be35a09af41bcff11009b693e066069687\\\",\\\"parents\\\":[\\\"0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650\\\"]}],[\\\"e.md\\\",{\\\"path\\\":\\\"e.md\\\",\\\"blob\\\":\\\"2394e877026c398dc8167f26c46794f9e6f536a9eda25abf545ea8853b82e481\\\",\\\"parents\\\":[\\\"9be24fe0cda82364fa103d5c166c9380236bb9eae597c35d555781412889af87\\\"]}],[\\\"d (sync-conflict PC cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc).md\\\",{\\\"path\\\":\\\"d.md\\\",\\\"blob\\\":\\\"b8af51b809fa21ebb825582f42c94be140f8ed148102694d1b32e2618a33d536\\\",\\\"parents\\\":[\\\"cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc\\\"]}]],\\\"reviewed\\\":[[\\\"a.md\\\",[\\\"2b3d216f9c64dad2234ef6e11fb80e333500df193fb6acaaad4fdf53c99e708a\\\",\\\"481be254b3832bff0cda02b4d8524ec89678468d7e3cb7c37e9afc5881d30fcf\\\"]],[\\\"b.md\\\",[\\\"6377dfcc931c2111a8822544d0f9b02c9d3fa7ccc8a3deafbee4d4ee07c2385f\\\",\\\"f27669302e97f0993ccf77f36c4f8d74f2175e4f0238f7e78c8f93a6ac4298b8\\\"]],[\\\"c.md\\\",[\\\"246441feca3e0c70b72044e7146e86e9571e60e88350907fd243664ec3f4fdf1\\\",\\\"99ebebfa57392670b40bdd7c985a54fe44741ed8521bd5af9bfbcb8f6dbea73c\\\"]],[\\\"d.md\\\",[\\\"0bb72656b7e85c04c4bbed122fc89615df1c6cdff180f07433f147df3b446650\\\",\\\"cb9a69ae8dacfc4af34ff888912d7e34a3cfe5861cab9de0e7f4a7ac59b6dfdc\\\"]]],\\\"absent\\\":[],\\\"pending\\\":null,\\\"receiptSequence\\\":6}\",\"hash\":\"86942167120c60a538207c4ec1f4b5500ba193b83096aac6f4c785a128d822c7\"}"
+    }
+  ]
+}

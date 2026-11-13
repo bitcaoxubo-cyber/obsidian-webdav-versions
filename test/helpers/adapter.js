@@ -2,7 +2,7 @@
 const { bytes, arrayBuffer } = require('../../src/bytes');
 // A native adapter contract model: asynchronous calls, exclusive copy, fault points.
 class Adapter {
-  constructor(now = Date.UTC(2000, 0, 1)) { this.files = new Map(); this.folders = new Set(['']); this.hook = async () => {}; this.clock = now; this.mtimes = new Map(); }
+  constructor(now = Date.UTC(2000, 0, 1)) { this.files = new Map(); this.folders = new Set(['']); this.hook = async () => {}; this.clock = now; this.mtimes = new Map(); this.supportsAtomicEmptyDirectoryRemoval = true; }
   setTime(now) { if (!Number.isFinite(now) || now < this.clock) throw new Error('clock must be monotonic'); this.clock = now; }
   touch(p) { this.mtimes.set(p, ++this.clock); }
   async stat(p) { return this.files.has(p) ? {type:'file',size:this.files.get(p).length,mtime:this.mtimes.get(p)} : this.folders.has(p) ? {type:'folder',size:0} : null; }
