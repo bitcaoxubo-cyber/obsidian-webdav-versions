@@ -483,7 +483,7 @@ const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
 const MAX_BYTES = 512 * 1024 * 1024;
 const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, cleanedDirectories: 0, conflicts: 0, deferred: 0,
-  conflictPaths: [], deferredPaths: [],
+  conflictPaths: [], deferredPaths: [], stalePaths: [], staleCopies: [],
   stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
 
 // Conflict names are valid physical paths, but are never valid logical note names.
@@ -536,6 +536,7 @@ class SyncEngine {
     this.state = state;
     this.device = device;
     this.queue = Promise.resolve();
+    this.staleCopies = new Map();
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
@@ -880,8 +881,38 @@ class SyncEngine {
     if (batch.length) yield batch;
   }
 
+  async _recognizeUnbound(s, before, physical, hash) {
+    if (hash === null || isConflictPath(physical) || s.absent.has(physical)) return false;
+    const history = before.byPath.get(physical);
+    if (!history) return false;
+    const remote = before.files.get(physical);
+    if (remote && hash === remote.blob) {
+      if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
+      return true;
+    }
+    const versions = before.versions.get(physical);
+    const deleted = versions?.size === 1 && versions.has(null);
+    if (deleted && this.keep.has(physical)) return false;
+    const earlier = history.filter(revision => revision.blob === hash).map(revision => revision.id).sort();
+    if (!earlier.length) return false;
+    if (deleted) {
+      // Lost local state is not consent to delete an unchanged historical copy,
+      // nor evidence of a new edit. Keep it unbound until the user decides.
+      this.nextStaleCopies.set(physical, { path: physical, hash, tips: [...before.tips.get(physical)] });
+    } else if (this._bind(s, physical, { path: physical, blob: hash, parents: earlier })) {
+      await this._checkpointProgress(s);
+    }
+    return true;
+  }
+
   async _capture(s, before, result, deferred) {
-    const listed = this.full ? await this.local.list() : [...this.dirty];
+    const changed = new Set([...this.dirty, ...this.keep]);
+    // Pending copies have no file binding. Revisit them when the remote target
+    // changes, but retain their UI entries on otherwise clean incremental polls.
+    if (!this.full) for (const [physical, entry] of this.staleCopies) {
+      if (!sameIds(entry.tips, before.tips.get(physical) || [])) changed.add(physical);
+    }
+    const listed = this.full ? await this.local.list() : [...changed];
     const paths = new Set(this.full ? [...listed, ...s.files.keys()] : listed);
     const sizes = new Map();
     const sizeOf = async name => {
@@ -910,8 +941,15 @@ class SyncEngine {
     if (provisional.length) project([...s.revs.values(), ...provisional]);
     const candidates = [];
     for (const physical of paths) {
+      this.nextStaleCopies.delete(physical);
       const base = s.files.get(physical);
       if (base && this.local.hash && await this._observedHash(physical) === base.blob) continue;
+      // Only history-bearing, unbound paths need this classification. Ordinary
+      // initial uploads keep the original read path and accounting unchanged.
+      if (!base && !isConflictPath(physical) && !s.absent.has(physical) && before.byPath.has(physical)) {
+        const hash = await this._observedHash(physical);
+        if (hash === null || await this._recognizeUnbound(s, before, physical, hash)) continue;
+      }
       const size = await sizeOf(physical);
       candidates.push({ physical, base, size: size === undefined ? MAX_BYTES : size === null ? 0 : size });
     }
@@ -937,7 +975,12 @@ class SyncEngine {
             if (remote && hash === remote.blob) {
               if (this._bind(s, physical, remote)) await this._checkpointProgress(s);
             } else if (isConflictPath(physical)) deferred.add(physical);
-            else pushes.push({ ...row, path: physical, parents: s.absent.get(physical) || [] });
+            else if (!await this._recognizeUnbound(s, before, physical, hash)) {
+              const versions = before.versions.get(physical);
+              const keepDeleted = this.keep.has(physical) && versions?.size === 1 && versions.has(null);
+              pushes.push({ ...row, path: physical,
+                parents: s.absent.get(physical) || (keepDeleted ? before.tips.get(physical) : []) });
+            }
           }
         }
         // Content-addressed blobs are safe to pre-upload. Revision publication,
@@ -1078,6 +1121,8 @@ class SyncEngine {
     this.observed = new Map();
     this.full = selected !== undefined || options.full !== false || options.deep === true;
     this.dirty = new Set(options.dirty || []);
+    this.keep = new Set(options.keep || []);
+    this.nextStaleCopies = this.full ? new Map() : new Map(this.staleCopies);
     result.stats.full = Number(this.full);
     this.local.stats = this.state.stats = result.stats;
     if (this.remote.setStats) this.remote.setStats(result.stats);
@@ -1141,6 +1186,10 @@ class SyncEngine {
     // File transactions, receipts and deletion baselines must be durable before
     // cosmetic directory cleanup. A failed cleanup is safe to retry in full.
     await this._pruneDirectories(s, after, deferred, result);
+    this.staleCopies = this.nextStaleCopies;
+    result.staleCopies = [...this.staleCopies.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+      .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
+    result.stalePaths = result.staleCopies.map(entry => entry.path);
     result.stats.durationMs = Date.now() - started;
     return result;
   }
