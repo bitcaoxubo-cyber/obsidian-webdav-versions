@@ -2,11 +2,14 @@
 // Adapted from leopard530/obsidian-sync-webdav: onload commands, ribbon,
 // status bar and debounced vault events. Every trigger now uses the same engine.
 const { Plugin, PluginSettingTab, Setting, SecretComponent, Notice, Modal, Platform, requestUrl } = require('obsidian');
-const { text } = require('./bytes');
+const { text, sha256 } = require('./bytes');
 const { MobileVault, MobileState, mobileRequest } = require('./mobile');
 const { SyncEngine } = require('./engine');
 const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
+const { assertRecoverableTrash } = require('./deletion');
+const { createConfirmationModal, confirmationKeys, confirmationCount } = require('./confirmations');
+const ConfirmationModal = createConfirmationModal({ Modal, Notice, Setting });
 
 const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');
@@ -19,25 +22,6 @@ class ResolveModal extends Modal {
     new Setting(this.contentEl)
       .addButton(b => b.setButtonText('取消').onClick(() => this.close()))
       .addButton(b => b.setCta().setButtonText('采用此版本').onClick(() => { this.close(); void this.resolve(); }));
-  }
-}
-
-class ConflictsModal extends Modal {
-  constructor(app, result) { super(app); this.result = result; }
-  onOpen() {
-    this.titleEl.setText('同步冲突');
-    if (!this.result) { this.contentEl.createEl('p', { text: '先运行一次同步以读取当前冲突。' }); return; }
-    const conflicts = this.result.conflictPaths || [];
-    const deferred = this.result.deferredPaths || [];
-    if (!conflicts.length && !deferred.length) this.contentEl.createEl('p', { text: '最近一次同步没有待处理的文件。' });
-    else this.contentEl.createEl('p', { text: '先比较正文与同目录的 sync-conflict 副本。打开要保留的版本后，运行「采用当前文件解决冲突」。若冲突来自另一台设备的删除，列表中只有仍有内容的版本。' });
-    for (const name of conflicts) {
-      new Setting(this.contentEl).setName(name).addButton(b => b.setButtonText('打开正文').onClick(async () => {
-        const file = this.app.vault.getAbstractFileByPath(name);
-        if (file) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); }
-      }));
-    }
-    for (const name of deferred) this.contentEl.createEl('p', { text: '等待同步：' + name });
   }
 }
 
@@ -78,6 +62,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.settings = Object.assign({}, defaults, await this.loadData());
     this.stopped = false;
     this.ready = false;
+    this.confirmationModal = null;
+    this.lastPromptKeys = new Set();
     this.scheduler = new SyncScheduler({ mobile: Platform.isMobile,
       setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: timer => window.clearTimeout(timer),
       run: () => this.autoSync(), enabled: () => this.ready && this.settings.auto && !this.stopped, active: () => this.isActive() });
@@ -88,7 +74,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.addCommand({ id: 'sync-now', name: '立即同步', callback: () => this.run('sync', true) });
     this.addCommand({ id: 'sync-deep', name: '深度校验同步', callback: () => this.run('deep', true) });
     this.addCommand({ id: 'sync-status', name: '查看同步状态', callback: () => this.openStatus() });
-    this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => new ConflictsModal(this.app, this.result).open() });
+    this.addCommand({ id: 'show-conflicts', name: '查看同步冲突', callback: () => this.openConfirmations() });
     this.addCommand({ id: 'resolve-current', name: '采用当前文件解决冲突', checkCallback: checking => {
       const file = this.app.workspace.getActiveFile();
       if (!file) return false;
@@ -131,6 +117,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       this.settings = { ...draft };
       this.engine = null;
       this.result = null;
+      this.confirmationModal?.close();
+      this.lastPromptKeys = new Set();
       this.lastError = '';
       this.showStatus('就绪');
       this.scheduler.reset();
@@ -168,6 +156,60 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   schedule(delay) { this.scheduler.schedule(delay); }
   autoSync() { if (this.ready && this.settings.auto && this.isActive() && !this.busy) return this.run('sync', false); }
   isActive() { return !this.stopped && (!Platform.isMobile || document.visibilityState !== 'hidden'); }
+  openConfirmations() {
+    if (this.confirmationModal) return;
+    this.lastPromptKeys = confirmationKeys(this.result);
+    this.confirmationModal = new ConfirmationModal(this);
+    this.confirmationModal.open();
+  }
+  updateConfirmations() {
+    const keys = confirmationKeys(this.result);
+    if (this.confirmationModal) {
+      this.lastPromptKeys = keys;
+      this.confirmationModal.setResult(this.result);
+    } else if ([...keys].some(key => !this.lastPromptKeys.has(key))) this.openConfirmations();
+  }
+  canRunDecisions(actions) {
+    try {
+      if (!this.isActive()) throw new Error('请保持 Obsidian 在前台再确认。');
+      if (actions.some(a => ['stale-delete', 'conflict-delete'].includes(a.kind))) assertRecoverableTrash(this.app);
+      return true;
+    } catch (error) { new Notice(error.message, 10000); return false; }
+  }
+  fileStamp(file) {
+    const s = file?.stat;
+    return s && Number.isFinite(s.mtime) && Number.isFinite(s.ctime) && Number.isSafeInteger(s.size)
+      ? JSON.stringify([s.mtime, s.ctime, s.size]) : null;
+  }
+  trashTokenCurrent(token) {
+    return this.isActive() && this.app.vault.getAbstractFileByPath(token.physical) === token.file &&
+      token.file.path === token.physical && this.fileStamp(token.file) === token.stamp &&
+      this.scheduler.dirty.get(token.physical) === token.generation && this.editorMatches(token.physical, token.data);
+  }
+  async trashToken(physical, hash) {
+    const file = this.app.vault.getAbstractFileByPath(physical);
+    if (!file || file.path !== physical || Array.isArray(file.children)) return null;
+    const stamp = this.fileStamp(file);
+    if (stamp === null) return null;
+    const generation = this.scheduler.dirty.get(physical);
+    const data = await this.getEngine().local.read(physical);
+    if (data === null || await sha256(data) !== hash) return null;
+    const token = { physical, file, stamp, generation, data };
+    return this.trashTokenCurrent(token) ? token : null;
+  }
+  async canTrash(physical, hash) { return !!await this.trashToken(physical, hash); }
+  async trashConfirmed(physical, hash) {
+    const token = await this.trashToken(physical, hash);
+    // Check again after the await: editor changes, renames, a new file object,
+    // host stat updates and newer event generations invalidate this permission.
+    if (!token || !this.trashTokenCurrent(token)) return false;
+    // Keep the preference check adjacent to the actual API call. A batch must
+    // stop using trashFile if the user switches to permanent deletion midway.
+    assertRecoverableTrash(this.app);
+    await this.app.fileManager.trashFile(token.file);
+    this.getEngine().local.invalidate?.(physical);
+    return true;
+  }
   openStatus() {
     const modal = new Modal(this.app);
     modal.titleEl.setText('飞牛同步状态');
@@ -177,6 +219,9 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       const r = this.result;
       modal.contentEl.createEl('p', { text: `最近一轮：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}，冲突 ${r.conflicts}，待处理 ${r.deferred}。` });
       if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
+      const waiting = confirmationCount(r);
+      if (waiting) modal.contentEl.createEl('p', { text: `有 ${waiting} 个文件等待确认。请打开“查看同步冲突”处理。` });
+      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '为保护目录内新写入的内容，已保留手机空文件夹；文件删除同步不受影响。' });
     }
     if (this.result?.stats) {
       const s = this.result.stats;
@@ -193,6 +238,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   async run(mode, notify, file) {
     if (!this.isActive() || !this.ready || this.configuring) return;
+    if (mode === 'decide' && !this.canRunDecisions(file)) return;
     const lock = globalThis[activeVaults] ||= new Set();
     const key = this.app.vault.adapter;
     if (lock.has(key)) { if (notify) new Notice('正在同步，请等待完成'); return; }
@@ -206,14 +252,21 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (mode === 'resolve' && !this.editorMatches(file, await engine.local.read(file))) {
         throw new Error('这篇笔记还有正在保存的修改，请稍后再采用此版本。');
       }
-      const r = mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
+      const r = mode === 'decide' ? await engine.confirm(file, {
+        canTrash: (physical, hash) => this.canTrash(physical, hash),
+        trash: (physical, hash) => this.trashConfirmed(physical, hash),
+      }) : mode === 'resolve' ? await engine.resolve(file) : await engine.sync({ full: ticket.full, dirty: ticket.dirty, deep: ticket.deep });
       this.scheduler.complete(ticket, r);
       if (r.stats) r.stats.pollIntervalMs = this.scheduler.pollIntervalMs;
       this.result = r;
       this.lastError = '';
-      const message = r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
+      const waiting = confirmationCount(r);
+      const message = waiting ? `有 ${waiting} 个文件等待确认` : r.deferred ? '有更改待下轮同步' : r.conflicts ? '有 ' + r.conflicts + ' 组冲突' : '已同步';
       if (!this.stopped) this.showStatus(message);
       if (notify && !this.stopped) new Notice(message);
+      if (mode === 'decide' && !this.stopped) new Notice(`${r.trashedFiles ? `已将 ${r.trashedFiles} 个文件移入回收站；` : ''}已处理 ${r.appliedDecisions || 0} 个，跳过 ${(r.skippedDecisions || []).length} 个。跳过的条目可能已有内容、编辑器或同步状态变化。`, 10000);
+      if (!this.stopped) this.updateConfirmations();
+      return r;
     } catch (err) {
       this.scheduler.fail(ticket);
       if (this.stopped) return;
@@ -225,6 +278,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   }
   onunload() {
     this.stopped = true;
+    this.confirmationModal?.close();
     this.scheduler.stop();
   }
 };

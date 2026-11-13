@@ -10,7 +10,11 @@ const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i
 const MAX_BYTES = 512 * 1024 * 1024;
 const counts = () => ({ uploaded: 0, downloaded: 0, deleted: 0, cleanedDirectories: 0, conflicts: 0, deferred: 0,
   conflictPaths: [], deferredPaths: [], stalePaths: [], staleCopies: [],
+  confirmations: { staleCopies: [], deletionConflicts: [], staleConflicts: [] },
+  appliedDecisions: 0, skippedDecisions: [], trashedFiles: 0, directoryCleanupBlocked: false,
   stats: { durationMs: 0, vaultReads: 0, hashBytes: 0, httpRequests: 0, full: 1 } });
+
+class ConfirmationChanged extends Error {}
 
 // Conflict names are valid physical paths, but are never valid logical note names.
 function checkPhysical(path) {
@@ -67,6 +71,12 @@ class SyncEngine {
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
   resolve(physicalPath) { return this._enqueue(() => this._run(physicalPath)); }
+  confirm(actions, callbacks = {}) {
+    return this._enqueue(() => {
+      if (!Array.isArray(actions)) throw new Error('Expected a list of confirmation actions');
+      return this._run(undefined, { full: true, decisions: actions, decisionCallbacks: callbacks });
+    });
+  }
 
   _enqueue(run) {
     const result = this.queue.then(run);
@@ -373,24 +383,187 @@ class SyncEngine {
     await this._checkpointProgress(s);
   }
 
-  async _resolve(s, selected, before, result) {
+  async _resolve(s, selected, before, result, expected = null) {
+    const reject = message => { throw expected ? new ConfirmationChanged(message) : new Error(message); };
     checkPhysical(selected);
     const binding = s.files.get(selected);
-    if (!binding) throw new Error('Select a synchronized member of a conflict and sync first');
+    if (!binding) reject('Select a synchronized member of a conflict and sync first');
     const path = binding.path;
     const reviewed = s.reviewed.get(path);
     const tips = before.tips.get(path) || [];
-    if (!reviewed || !sameIds(reviewed, tips)) throw new Error('Conflict changed; sync and review all versions first');
-    if (before.versions.get(path)?.size < 2) throw new Error('No unresolved conflict for ' + path);
+    if (!reviewed || !sameIds(reviewed, tips)) reject('Conflict changed; sync and review all versions first');
+    if (before.versions.get(path)?.size < 2) reject('No unresolved conflict for ' + path);
+    if (expected && (expected.path !== path || !sameIds(expected.tips, tips))) reject('Confirmation history changed');
     for (const [physical, v] of before.files) {
       if (v.path !== path || physical === selected) continue;
-      if (await this._hash(await this._read(physical)) !== v.blob) {
-        throw new Error('Another conflict copy was edited or removed; sync and review it first: ' + physical);
+      const data = await this._read(physical);
+      if (await this._hash(data) !== v.blob || (expected && this.local.guard && !this.local.guard(physical, data))) {
+        reject('Another conflict copy was edited or removed; sync and review it first: ' + physical);
       }
     }
     const data = await this._read(selected);
-    if (data === null) throw new Error('Selected conflict file is missing: ' + selected);
+    if (data === null) reject('Selected conflict file is missing: ' + selected);
+    if (expected) {
+      const chosen = expected.files.find(file => file.physical === selected);
+      if (!chosen || await this._hash(data) !== chosen.hash || (this.local.guard && !this.local.guard(selected, data))) {
+        reject('Selected conflict content changed after confirmation: ' + selected);
+      }
+    }
     await this._push(s, selected, path, tips, data, result);
+  }
+
+  _ancestorBlobs(s, ids) {
+    const blobs = new Set(), visited = new Set(), pending = ids.flatMap(id => s.revs.get(id).parents);
+    while (pending.length) {
+      const id = pending.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const rev = s.revs.get(id);
+      if (rev.blob !== null) blobs.add(rev.blob);
+      pending.push(...rev.parents);
+    }
+    return blobs;
+  }
+
+  _confirmationGroups(s, view, staleCopies = []) {
+    const groups = { staleCopies, deletionConflicts: [], staleConflicts: [] };
+    const filesByPath = new Map();
+    for (const [physical, binding] of view.files) {
+      if (!filesByPath.has(binding.path)) filesByPath.set(binding.path, []);
+      filesByPath.get(binding.path).push({ physical, hash: binding.blob });
+    }
+    for (const [path, versions] of view.versions) {
+      if (versions.size < 2) continue;
+      const files = (filesByPath.get(path) || []).sort((a, b) => a.physical < b.physical ? -1 : a.physical > b.physical ? 1 : 0);
+      const tips = [...view.tips.get(path)];
+      const devices = [...new Set(tips.map(id => s.revs.get(id)).filter(rev => rev.blob !== null).map(rev => rev.device))].sort();
+      if (versions.has(null)) {
+        const prior = this._ancestorBlobs(s, versions.get(null));
+        groups.deletionConflicts.push({ path, tips, files, devices,
+          unchanged: [...versions.keys()].filter(hash => hash !== null).every(hash => prior.has(hash)),
+          selected: files.find(file => file.physical === path)?.physical || files[0]?.physical });
+      } else if (versions.size === 2) {
+        const [a, b] = [...versions.keys()];
+        // Equal-content parallel heads are one displayed version. Any ancestry
+        // evidence in the opposite direction makes "newer" ambiguous.
+        const aBeforeB = versions.get(b).some(id => this._ancestorBlobs(s, [id]).has(a));
+        const bBeforeA = versions.get(a).some(id => this._ancestorBlobs(s, [id]).has(b));
+        if (aBeforeB !== bBeforeA) {
+          const newer = aBeforeB ? b : a;
+          groups.staleConflicts.push({ path, tips, files, devices, selected: files.find(file => file.hash === newer).physical });
+        }
+      }
+    }
+    for (const entries of [groups.deletionConflicts, groups.staleConflicts]) entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    return groups;
+  }
+
+  _sameDecisionFiles(actual, expected) {
+    if (!Array.isArray(actual) || actual.length !== expected.length || actual.some(file => !file || typeof file.physical !== 'string')) return false;
+    const ordered = [...actual].sort((a, b) => a.physical < b.physical ? -1 : a.physical > b.physical ? 1 : 0);
+    return ordered.every((file, index) => file.physical === expected[index].physical && file.hash === expected[index].hash);
+  }
+
+  async _decisionFileMatches(physical, hash) {
+    this.local.checkActive?.();
+    const data = await this._read(physical);
+    checkSize(data, physical);
+    if (data === null || await this._hash(data) !== hash) {
+      this.local.invalidate?.(physical);
+      return false;
+    }
+    return !this.local.guard || this.local.guard(physical, data);
+  }
+
+  async _confirm(s, before, actions, callbacks, result) {
+    const groups = this._confirmationGroups(s, before);
+    const deletions = new Map(groups.deletionConflicts.map(entry => [entry.path, entry]));
+    const older = new Map(groups.staleConflicts.map(entry => [entry.path, entry]));
+    const prepared = [], seen = new Set();
+    const skip = (kind, path, reason) => result.skippedDecisions.push({ kind, path, reason });
+    for (const action of actions) {
+      const kind = action?.kind, entry = action?.entry, path = entry?.path;
+      if (!['stale-delete', 'stale-keep', 'conflict-delete', 'resolve'].includes(kind) || typeof path !== 'string') {
+        skip(kind || 'unknown', typeof path === 'string' ? path : null, 'invalid-entry'); continue;
+      }
+      try { safePath(path); } catch { skip(kind, path, 'invalid-entry'); continue; }
+      if (seen.has(path)) { skip(kind, path, 'duplicate'); continue; }
+      if (!Array.isArray(entry.tips) || !sameIds(entry.tips, before.tips.get(path) || [])) {
+        skip(kind, path, 'remote-changed'); continue;
+      }
+      let canonical, files, selected;
+      if (kind === 'stale-delete' || kind === 'stale-keep') {
+        const versions = before.versions.get(path);
+        if (s.files.has(path) || s.absent.has(path) || versions?.size !== 1 || !versions.has(null) ||
+            typeof entry.hash !== 'string' || !/^[a-f0-9]{64}$/.test(entry.hash) ||
+            !(before.byPath.get(path) || []).some(rev => rev.blob === entry.hash)) {
+          skip(kind, path, 'baseline-changed'); continue;
+        }
+        canonical = { path, hash: entry.hash, tips: [...before.tips.get(path)] };
+        files = [{ physical: path, hash: entry.hash }];
+      } else {
+        canonical = deletions.get(path) || (kind === 'resolve' ? older.get(path) : null);
+        if (!canonical || !this._sameDecisionFiles(entry.files, canonical.files)) {
+          skip(kind, path, 'baseline-changed'); continue;
+        }
+        files = canonical.files;
+        if (files.some(file => { const base = s.files.get(file.physical); return !base || base.path !== path || base.blob !== file.hash; })) {
+          skip(kind, path, 'baseline-changed'); continue;
+        }
+        if (kind === 'resolve') {
+          selected = action.selected ?? entry.selected ?? canonical.selected;
+          if (!files.some(file => file.physical === selected) || (older.has(path) && selected !== canonical.selected)) {
+            skip(kind, path, 'invalid-selection'); continue;
+          }
+        }
+      }
+      const deleting = kind === 'stale-delete' || kind === 'conflict-delete';
+      if (deleting && (typeof callbacks.canTrash !== 'function' || typeof callbacks.trash !== 'function')) {
+        skip(kind, path, 'trash-unavailable'); continue;
+      }
+      let valid = true;
+      for (const file of files) {
+        if (!await this._decisionFileMatches(file.physical, file.hash) ||
+            (deleting && await callbacks.canTrash(file.physical, file.hash) !== true)) { valid = false; break; }
+      }
+      if (!valid) { skip(kind, path, 'local-changed'); continue; }
+      seen.add(path); prepared.push({ kind, path, entry: canonical, files, selected });
+    }
+
+    // A clean incremental poll can discover equal-content heads without yet
+    // acknowledging them locally. Fresh byte checks above permit that binding
+    // now; persist all such parents before the first recoverable trash call.
+    if (prepared.some(action => action.kind === 'conflict-delete')) {
+      for (const action of prepared) if (action.kind === 'conflict-delete') {
+        for (const file of action.files) this._bind(s, file.physical, before.files.get(file.physical));
+      }
+      await this._save(s);
+    }
+    for (const action of prepared) {
+      const { kind, path, entry, files, selected } = action;
+      this.local.checkActive?.();
+      if (kind === 'stale-keep') {
+        if (!await this._decisionFileMatches(path, entry.hash)) { skip(kind, path, 'local-changed'); continue; }
+        this.keep.add(path);
+      } else if (kind === 'resolve') {
+        try { await this._resolve(s, selected, before, result, entry); }
+        catch (error) {
+          if (!(error instanceof ConfirmationChanged)) throw error;
+          skip(kind, path, 'local-or-review-changed'); continue;
+        }
+      } else {
+        let applied = true;
+        for (const file of files) {
+          this.local.checkActive?.();
+          const trashed = await callbacks.trash(file.physical, file.hash);
+          if (trashed === true) result.trashedFiles++;
+          this.local.invalidate?.(file.physical);
+          if (trashed !== true || await this._read(file.physical) !== null) { applied = false; break; }
+        }
+        if (!applied) { skip(kind, path, 'local-changed'); continue; }
+      }
+      result.appliedDecisions++;
+    }
   }
 
   * _batches(items) {
@@ -673,8 +846,9 @@ class SyncEngine {
     if (selected !== undefined) {
       await this._resolve(s, selected, before, result);
     }
+    if (options.decisions) await this._confirm(s, before, options.decisions, options.decisionCallbacks || {}, result);
     const deferred = new Set();
-    const captureView = selected === undefined ? before : snapshot(s.revs);
+    const captureView = selected === undefined && !options.decisions ? before : snapshot(s.revs);
     const capturedRevisionCount = s.revs.size;
     await this._capture(s, captureView, result, deferred);
     const after = s.revs.size === capturedRevisionCount ? captureView : snapshot(s.revs);
@@ -712,10 +886,17 @@ class SyncEngine {
     // File transactions, receipts and deletion baselines must be durable before
     // cosmetic directory cleanup. A failed cleanup is safe to retry in full.
     await this._pruneDirectories(s, after, deferred, result);
+    result.directoryCleanupBlocked = !!this.local.directoryCleanupBlocked;
+    for (const [path, entry] of this.nextStaleCopies) {
+      const versions = after.versions.get(path);
+      if (s.files.has(path) || versions?.size !== 1 || !versions.has(null)) this.nextStaleCopies.delete(path);
+      else entry.tips = [...after.tips.get(path)];
+    }
     this.staleCopies = this.nextStaleCopies;
     result.staleCopies = [...this.staleCopies.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
       .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
     result.stalePaths = result.staleCopies.map(entry => entry.path);
+    result.confirmations = this._confirmationGroups(s, after, result.staleCopies);
     result.stats.durationMs = Date.now() - started;
     return result;
   }
