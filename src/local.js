@@ -194,6 +194,7 @@ class DiskVault {
     this.guard = guard;
     this.hashCache = new Map();
     this.tracksStats = true;
+    this.syncAppliedDirectoryCleanup = true;
     this.transferBudget = 128 * 1024 * 1024;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
@@ -237,6 +238,27 @@ class DiskVault {
     };
     await visit(this.root, '');
     return files;
+  }
+
+  async pruneEmptyDirectories(directories) {
+    const ordered = [...new Set(directories)].sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+    for (const dir of ordered) this.filePath(dir);
+    const blocked = new Set();
+    let removed = 0;
+    for (const dir of ordered) {
+      if (blocked.has(dir)) continue;
+      try {
+        // No preliminary emptiness check: the kernel rejects any content,
+        // including a file created immediately before this call.
+        await fsp.rmdir(this.filePath(dir));
+        removed++;
+      } catch (error) {
+        if (!['ENOTEMPTY', 'EEXIST', 'ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+        // A failed child ends this ancestor chain, but not independent siblings.
+        for (let slash = dir.lastIndexOf('/'); slash > 0; slash = dir.lastIndexOf('/', slash - 1)) blocked.add(dir.slice(0, slash));
+      }
+    }
+    return removed;
   }
 
   readFile(file, limit) {

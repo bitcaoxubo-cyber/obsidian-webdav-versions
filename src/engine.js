@@ -58,7 +58,7 @@ function snapshot(revisions) {
 }
 
 class SyncEngine {
-  constructor({ remote, local, state, device, concurrency = 4 }) {
+  constructor({ remote, local, state, device, concurrency = 4, retainedDirectories = () => [] }) {
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Transfer concurrency must be between 1 and 4');
     this.concurrency = concurrency;
     this.remote = remote;
@@ -67,6 +67,7 @@ class SyncEngine {
     this.device = device;
     this.queue = Promise.resolve();
     this.staleCopies = new Map();
+    this.retainedDirectories = retainedDirectories;
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
@@ -215,7 +216,7 @@ class SyncEngine {
       revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
       changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
       receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false,
-      cleanupPaths: new Set() };
+      cleanupPaths: new Set(), appliedDeletions: new Set() };
     s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
@@ -754,7 +755,7 @@ class SyncEngine {
             if (absent) this._setAbsent(s, absent.path, absent.parents);
             await this._completeOperation(s, next, absent, known);
             if (next) result.downloaded++;
-            else result.deleted++;
+            else { result.deleted++; s.appliedDeletions.add(physical); }
           } else {
             this.observed.delete(physical);
             deferred.add(physical); // An editor change after the scan must survive.
@@ -783,15 +784,24 @@ class SyncEngine {
         target.add(name.slice(0, slash));
       }
     };
-    // Full rounds also repair folders left by older clients or an interrupted
-    // cleanup. Incremental rounds do no directory I/O without a new deletion.
-    for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
-      const versions = view.versions.get(name);
-      if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+    // Desktop only prunes files actually removed by this round's successful
+    // apply CAS. Local edits, old tombstones and crash recovery are not origins.
+    // Keep the legacy mobile adapter's opt-in/test behavior unchanged.
+    if (this.local.syncAppliedDirectoryCleanup) {
+      for (const name of s.appliedDeletions) parents(name, directories);
+    } else {
+      for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
+        const versions = view.versions.get(name);
+        if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+      }
     }
     if (!directories.size) return;
-    for (const names of [view.files.keys(), s.files.keys(), deferred]) {
+    for (const names of [view.files.keys(), s.files.keys(), deferred, this.nextStaleCopies.keys()]) {
       for (const name of names) parents(name, protectedDirectories);
+    }
+    for (const dir of this.retainedDirectories()) {
+      protectedDirectories.add(dir); parents(dir, protectedDirectories);
+      for (const candidate of directories) if (candidate.startsWith(dir + '/')) protectedDirectories.add(candidate);
     }
     for (const dir of protectedDirectories) directories.delete(dir);
     if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
