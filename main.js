@@ -125,6 +125,17 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
         .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
         .addButton(b => b.setButtonText(label).setCta().onClick(() => this.execute(actions)));
     }
+    async executeDirectories(entries, keep = false) {
+      if (this.plugin.busy) { new Notice('正在同步，请等待完成后再确认。'); return; }
+      this.close(); await this.plugin.runDirectories(entries.map(e => e.path), keep);
+    }
+    confirmDirectories(entries) {
+      this.contentEl.empty();
+      this.contentEl.createEl('p', { text: `将清理 ${entries.length} 个空文件夹。只删除空文件夹，不删除任何笔记。目录内容或同步状态已变化时会跳过；手机及含 .DS_Store 的目录会移入回收站。` });
+      new Setting(this.contentEl)
+        .addButton(b => b.setButtonText('返回').onClick(() => this.render()))
+        .addButton(b => b.setButtonText('确认清理空文件夹').setCta().onClick(() => this.executeDirectories(entries)));
+    }
     async openFile(name) {
       const file = this.app.vault.getAbstractFileByPath(name);
       if (file) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); }
@@ -167,6 +178,17 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
         for (const entry of staleConflicts) new Setting(this.contentEl).setName(entry.path).setDesc('较新版本：' + entry.selected)
           .addButton(b => b.setButtonText('采用较新版本').onClick(() => this.execute([decision('resolve', entry, entry.selected)])));
       }
+      const empty = this.result.emptyDirectories || [];
+      if (empty.length) {
+        this.contentEl.createEl('h3', { text: `空文件夹 · ${empty.length}` });
+        new Setting(this.contentEl)
+          .addButton(b => b.setButtonText('全部清理').onClick(() => this.confirmDirectories(empty)))
+          .addButton(b => b.setButtonText('全部保留').onClick(() => this.executeDirectories(empty, true)));
+        for (const entry of empty) new Setting(this.contentEl).setName(entry.path)
+          .setDesc(`包含 ${entry.subdirectoryCount} 个子文件夹${entry.containsDSStore ? ' · 含 .DS_Store' : ''}`)
+          .addButton(b => b.setButtonText('清理').onClick(() => this.executeDirectories([entry])))
+          .addButton(b => b.setButtonText('保留').onClick(() => this.executeDirectories([entry], true)));
+      }
       const other = (this.result.conflictPaths || []).filter(p => !classified.has(p));
       const deferred = this.result.deferredPaths || [];
       if (other.length) {
@@ -176,7 +198,7 @@ function createConfirmationModal({ Modal, Notice, Setting }) {
       }
       if (deferred.length) this.contentEl.createEl('h3', { text: '等待同步' });
       for (const name of deferred) this.contentEl.createEl('p', { text: name });
-      if (!confirmationCount(this.result) && !other.length && !deferred.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
+      if (!confirmationCount(this.result) && !other.length && !deferred.length && !empty.length) this.contentEl.createEl('p', { text: '最近一次同步没有需要确认或等待处理的文件。' });
     }
   };
 }
@@ -573,6 +595,51 @@ function assertRecoverableTrash(app) {
 module.exports = { assertRecoverableTrash };
 
 },
+"directories":function(module,exports,require){
+'use strict';
+
+const parentDirectory = name => name.slice(0, Math.max(0, name.lastIndexOf('/')));
+const underDirectory = (name, dir) => name === dir || name.startsWith(dir + '/');
+function addParents(name, set) {
+  for (let slash = name.lastIndexOf('/'); slash > 0; slash = name.lastIndexOf('/', slash - 1)) set.add(name.slice(0, slash));
+}
+function directoryRecord() { return { files: new Set(), folders: new Set(), blocked: false }; }
+function forgetDirectory(records, dir) {
+  if (!records) return;
+  for (const name of records.keys()) if (underDirectory(name, dir)) records.delete(name);
+  records.get(parentDirectory(dir))?.folders.delete(dir);
+}
+
+// Pure calculation over the directory entries already seen by list(). No I/O,
+// persistent progress or remote directory objects are needed.
+function residualDirectories(records, { history, protectedPaths = [], retained = [], allowDSStore = false }) {
+  if (!records) return [];
+  const historical = new Set(), protectedDirs = new Set(), eligible = new Map();
+  for (const name of history) addParents(name, historical);
+  for (const name of protectedPaths) { protectedDirs.add(name); addParents(name, protectedDirs); }
+  for (const dir of retained) { protectedDirs.add(dir); addParents(dir, protectedDirs); }
+  const ordered = [...records.keys()].filter(Boolean).sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+  for (const dir of ordered) {
+    const record = records.get(dir);
+    if (record.blocked || !historical.has(dir) || protectedDirs.has(dir) || retained.some(p => underDirectory(dir, p))) continue;
+    let ds = false, blocked = false, count = 0;
+    for (const file of record.files) {
+      if (allowDSStore && file === dir + '/.DS_Store') ds = true;
+      else { blocked = true; break; }
+    }
+    if (blocked) continue;
+    for (const child of record.folders) {
+      const e = eligible.get(child);
+      if (!e) { blocked = true; break; }
+      count += 1 + e.subdirectoryCount; ds ||= e.containsDSStore;
+    }
+    if (!blocked) eligible.set(dir, { path: dir, subdirectoryCount: count, containsDSStore: ds });
+  }
+  return [...eligible.values()].filter(e => !eligible.has(parentDirectory(e.path))).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
+module.exports = { parentDirectory, underDirectory, addParents, directoryRecord, forgetDirectory, residualDirectories };
+
+},
 "engine":function(module,exports,require){
 'use strict';
 
@@ -580,6 +647,7 @@ const { indexRevisions, isConflictPath, makeRevision, project, safePath, validat
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 const { parallel } = require('./sharded');
+const { parentDirectory, underDirectory, forgetDirectory, residualDirectories } = require('./directories');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -634,7 +702,7 @@ function snapshot(revisions) {
 }
 
 class SyncEngine {
-  constructor({ remote, local, state, device, concurrency = 4 }) {
+  constructor({ remote, local, state, device, concurrency = 4, retainedDirectories = () => [] }) {
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Transfer concurrency must be between 1 and 4');
     this.concurrency = concurrency;
     this.remote = remote;
@@ -643,6 +711,8 @@ class SyncEngine {
     this.device = device;
     this.queue = Promise.resolve();
     this.staleCopies = new Map();
+    this.retainedDirectories = retainedDirectories;
+    this.emptyDirectories = [];
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
@@ -651,6 +721,50 @@ class SyncEngine {
     return this._enqueue(() => {
       if (!Array.isArray(actions)) throw new Error('Expected a list of confirmation actions');
       return this._run(undefined, { full: true, decisions: actions, decisionCallbacks: callbacks });
+    });
+  }
+
+  cleanDirectories(paths, callbacks = {}) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string')) throw new Error('空文件夹清理请求无效。');
+      const selected = [...new Set(paths)];
+      // Validate the whole request before performing even one removal.
+      for (const dir of selected) this.local.validateDirectory(dir);
+      const result = { cleaned: [], skipped: [] };
+      for (const dir of selected) {
+        const token = callbacks.begin?.(dir);
+        try {
+          const inspect = async () => {
+            const records = await this.local.inspectDirectories(dir);
+            return this._residualDirectories(records).some(e => e.path === dir) ? records : null;
+          };
+          const records = this.directoryContext ? await inspect() : null;
+          if (!records) { result.skipped.push(dir); continue; }
+          const entry = this._residualDirectories(records).find(e => e.path === dir);
+          let cleaned = false;
+          if (this.local.syncAppliedDirectoryCleanup && !entry.containsDSStore) {
+            cleaned = await this.local.pruneEmptyDirectories(records.keys()) === records.size;
+          } else if (callbacks.trash) {
+            cleaned = await callbacks.trash(dir, token, inspect);
+          }
+          if (cleaned) {
+            result.cleaned.push(dir); forgetDirectory(this.local.directorySnapshot, dir);
+            this.emptyDirectories = this.emptyDirectories.filter(e => !underDirectory(e.path, dir));
+          } else result.skipped.push(dir);
+        } finally { callbacks.finish?.(token); }
+      }
+      result.emptyDirectories = this.emptyDirectories;
+      return result;
+    });
+  }
+
+  retainDirectories(paths, save) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths)) throw new Error('空文件夹保留请求无效。');
+      for (const dir of paths) this.local.validateDirectory(dir);
+      await save(paths);
+      this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+      return this.emptyDirectories;
     });
   }
 
@@ -791,7 +905,7 @@ class SyncEngine {
       revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
       changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
       receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false,
-      cleanupPaths: new Set() };
+      cleanupPaths: new Set(), appliedDeletions: new Set() };
     s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
@@ -1330,7 +1444,10 @@ class SyncEngine {
             if (absent) this._setAbsent(s, absent.path, absent.parents);
             await this._completeOperation(s, next, absent, known);
             if (next) result.downloaded++;
-            else result.deleted++;
+            else {
+              result.deleted++; s.appliedDeletions.add(physical);
+              this.local.directorySnapshot?.get(parentDirectory(physical))?.files.delete(physical);
+            }
           } else {
             this.observed.delete(physical);
             deferred.add(physical); // An editor change after the scan must survive.
@@ -1359,15 +1476,24 @@ class SyncEngine {
         target.add(name.slice(0, slash));
       }
     };
-    // Full rounds also repair folders left by older clients or an interrupted
-    // cleanup. Incremental rounds do no directory I/O without a new deletion.
-    for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
-      const versions = view.versions.get(name);
-      if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+    // Desktop only prunes files actually removed by this round's successful
+    // apply CAS. Local edits, old tombstones and crash recovery are not origins.
+    // Keep the legacy mobile adapter's opt-in/test behavior unchanged.
+    if (this.local.syncAppliedDirectoryCleanup) {
+      for (const name of s.appliedDeletions) parents(name, directories);
+    } else {
+      for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
+        const versions = view.versions.get(name);
+        if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+      }
     }
     if (!directories.size) return;
-    for (const names of [view.files.keys(), s.files.keys(), deferred]) {
+    for (const names of [view.files.keys(), s.files.keys(), deferred, this.nextStaleCopies.keys()]) {
       for (const name of names) parents(name, protectedDirectories);
+    }
+    for (const dir of this.retainedDirectories()) {
+      protectedDirectories.add(dir); parents(dir, protectedDirectories);
+      for (const candidate of directories) if (candidate.startsWith(dir + '/')) protectedDirectories.add(candidate);
     }
     for (const dir of protectedDirectories) directories.delete(dir);
     if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
@@ -1390,6 +1516,9 @@ class SyncEngine {
   }
 
   async _runOnce(selected, options = {}) {
+    // A failed sync may leave a journal. Never authorize directory cleanup using
+    // an older successful round until a new successful round restores context.
+    this.directoryContext = null;
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
@@ -1473,8 +1602,19 @@ class SyncEngine {
       .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
     result.stalePaths = result.staleCopies.map(entry => entry.path);
     result.confirmations = this._confirmationGroups(s, after, result.staleCopies);
+    this.directoryContext = { history: [...after.byPath.keys()],
+      protectedPaths: [...after.files.keys(), ...s.files.keys(), ...deferred, ...this.staleCopies.keys(),
+        ...(s.pending ? [s.pending.physical] : [])] };
+    if (this.full) this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+    result.emptyDirectories = this.emptyDirectories;
     result.stats.durationMs = Date.now() - started;
     return result;
+  }
+
+  _residualDirectories(records) {
+    if (!this.directoryContext) return [];
+    return residualDirectories(records, { ...this.directoryContext, retained: this.retainedDirectories(),
+      allowDSStore: this.local.syncAppliedDirectoryCleanup === true });
   }
 }
 
@@ -1487,6 +1627,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { directoryRecord, forgetDirectory } = require('./directories');
 
 const hash = (bytes, stats) => {
   if (stats) stats.hashBytes += typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.byteLength;
@@ -1678,6 +1819,7 @@ class DiskVault {
     this.guard = guard;
     this.hashCache = new Map();
     this.tracksStats = true;
+    this.syncAppliedDirectoryCleanup = true;
     this.transferBudget = 128 * 1024 * 1024;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
@@ -1710,17 +1852,65 @@ class DiskVault {
   async list() {
     this.recover();
     const files = [];
+    const directories = new Map();
     const visit = async (base, prefix) => {
+      const record = directoryRecord(); directories.set(prefix.slice(0, -1), record);
       for (const e of await fsp.readdir(base, { withFileTypes: true })) {
-        if (e.isSymbolicLink() || e.name.startsWith('.') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) continue;
         const rel = prefix + e.name.normalize('NFC');
-        if (e.isDirectory()) await visit(this.filePath(rel), rel + '/');
-        else if (e.isFile()) files.push(rel);
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) { record.blocked = true; continue; }
+        if (e.name === '.DS_Store') { if (e.isFile()) record.files.add(rel); else record.blocked = true; continue; }
+        if (e.isDirectory()) { record.folders.add(rel); await visit(this.filePath(rel), rel + '/'); }
+        else if (e.isFile()) { record.files.add(rel); files.push(rel); }
         else throw new Error('笔记库包含特殊文件，请移出同步范围：' + rel);
       }
     };
     await visit(this.root, '');
+    this.directorySnapshot = directories;
     return files;
+  }
+
+  async pruneEmptyDirectories(directories) {
+    const ordered = [...new Set(directories)].sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+    for (const dir of ordered) this.filePath(dir);
+    const blocked = new Set();
+    let removed = 0;
+    for (const dir of ordered) {
+      if (blocked.has(dir)) continue;
+      try {
+        // No preliminary emptiness check: the kernel rejects any content,
+        // including a file created immediately before this call.
+        await fsp.rmdir(this.filePath(dir));
+        forgetDirectory(this.directorySnapshot, dir);
+        removed++;
+      } catch (error) {
+        if (!['ENOTEMPTY', 'EEXIST', 'ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+        // A failed child ends this ancestor chain, but not independent siblings.
+        for (let slash = dir.lastIndexOf('/'); slash > 0; slash = dir.lastIndexOf('/', slash - 1)) blocked.add(dir.slice(0, slash));
+      }
+    }
+    return removed;
+  }
+
+  validateDirectory(dir) { this.filePath(dir); }
+  async inspectDirectories(dir) {
+    this.validateDirectory(dir);
+    const records = new Map();
+    const visit = async name => {
+      const file = this.filePath(name);
+      if (!statMaybe(file)?.isDirectory()) return false;
+      const record = directoryRecord(); records.set(name, record);
+      for (const e of await fsp.readdir(file, { withFileTypes: true })) {
+        const child = name + '/' + e.name.normalize('NFC');
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store')) record.blocked = true;
+        else if (e.isDirectory() && e.name !== '.DS_Store') {
+          record.folders.add(child); if (!await visit(child)) record.blocked = true;
+        } else if (e.isFile()) record.files.add(child);
+        else record.blocked = true;
+      }
+      return true;
+    };
+    try { return await visit(dir) ? records : null; }
+    catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
   }
 
   readFile(file, limit) {
@@ -1993,6 +2183,7 @@ module.exports={migrateStorage,rollbackStorage,verifyObject};
 },
 "mobile":function(module,exports,require){
 'use strict';
+const { directoryRecord } = require('./directories');
 const { bytes, text, arrayBuffer, digest, sha256, randomUUID } = require('./bytes');
 
 // Native requestUrl buffers responses; keep mobile files below a conservative cap.
@@ -2383,15 +2574,18 @@ class MobileVault extends AdapterIO {
     this.checkActive();
     this.statHints.clear();
     const files = [];
+    const directories = new Map();
     const visit = async dir => {
       const listed = await this.adapter.list(dir);
+      const record = directoryRecord(); directories.set(dir, record);
       for (const p of [...listed.files, ...listed.folders]) {
         // Validate adapter output rather than accidentally scanning beyond the vault.
         if ((dir ? !p.startsWith(dir + '/') : p.startsWith('/')) || p.slice(dir ? dir.length + 1 : 0).includes('/')) throw new Error('本地目录清单无效。');
-        if (p.split('/').some(v => v.startsWith('.')) || p.split('/')[0].toLowerCase() === this.configDir.toLowerCase()) continue;
+        if (p.split('/').some(v => v.startsWith('.')) || p.split('/')[0].toLowerCase() === this.configDir.toLowerCase()) { record.blocked = true; continue; }
         this.path(p);
-        if (listed.folders.includes(p)) await visit(p);
+        if (listed.folders.includes(p)) { record.folders.add(p); await visit(p); }
         else {
+          record.files.add(p);
           const st = await this.adapter.stat(p);
           if (!st || st.type !== 'file') throw new Error('扫描期间文件发生变化，请重试。');
           if (st.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + p);
@@ -2400,7 +2594,7 @@ class MobileVault extends AdapterIO {
         }
       }
     };
-    await visit(''); return files;
+    await visit(''); this.directorySnapshot = directories; return files;
   }
   async pruneEmptyDirectories(directories) {
     const ordered = [...new Set(directories)];
@@ -2449,6 +2643,28 @@ class MobileVault extends AdapterIO {
       }
     }
     return removed;
+  }
+  validateDirectory(dir) { this.path(dir); }
+  async inspectDirectories(dir) {
+    this.path(dir); this.checkActive();
+    const records = new Map();
+    const visit = async name => {
+      this.path(name); this.checkActive();
+      if ((await this.adapter.stat(name))?.type !== 'folder') return false;
+      const record = directoryRecord(); records.set(name, record);
+      const listed = await this.adapter.list(name);
+      for (const p of [...listed.files, ...listed.folders]) {
+        if (!p.startsWith(name + '/') || p.slice(name.length + 1).includes('/')) throw new Error('本地目录清单无效。');
+        if (p.split('/').some(v => v.startsWith('.'))) { record.blocked = true; continue; }
+        if (listed.folders.includes(p)) { record.folders.add(p); if (!await visit(p)) record.blocked = true; }
+        else record.files.add(p);
+      }
+      return true;
+    };
+    return await visit(dir) ? records : null;
+  }
+  forgetDirectoryHints(dir) {
+    for (const cached of this.confirmedDirectories) if (cached === dir || cached.startsWith(dir + '/')) this.confirmedDirectories.delete(cached);
   }
   async finish() {
     if (!await this.adapter.exists(this.transaction)) return;
@@ -2587,10 +2803,11 @@ const { SyncEngine } = require('./engine');
 const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 const { assertRecoverableTrash } = require('./deletion');
+const { underDirectory } = require('./directories');
 const { createConfirmationModal, confirmationKeys, confirmationCount } = require('./confirmations');
 const ConfirmationModal = createConfirmationModal({ Modal, Notice, Setting });
 
-const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
+const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false, retainedEmptyDirectories: [] };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');
 
 class ResolveModal extends Modal {
@@ -2616,6 +2833,11 @@ class SyncSettings extends PluginSettingTab {
     new Setting(el).setName('同步状态').setDesc(p.lastError || p.statusMessage || '就绪')
       .addButton(b => b.setButtonText('立即同步').onClick(async () => { await p.run('sync', true); this.display(); }))
       .addButton(b => b.setButtonText('查看详情').onClick(() => p.openStatus()));
+    new Setting(el).setName(`已保留 ${p.settings.retainedEmptyDirectories.length} 个空文件夹`)
+      .setDesc('仅本机生效。重置后，下次全量同步会重新识别。')
+      .addButton(b => b.setButtonText('重置').onClick(async () => {
+        if (await p.saveRetainedDirectories([], true)) this.display();
+      }));
     if (Platform.isMobile) el.createEl('p', { text: '手机测试版：单个文件最多 128 MiB；首次接入先使用独立测试库，保持应用在前台。' });
     new Setting(el).setName('WebDAV 文件夹地址').setDesc('填写各设备共用的专用文件夹的完整 HTTPS 地址。请先在飞牛中建好该文件夹。')
       .addText(t => t.setPlaceholder('https://nas.example/笔记同步/').setValue(draft.url).onChange(v => { draft.url = v.trim(); }));
@@ -2640,6 +2862,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   async onload() {
     if (!this.app.secretStorage || !SecretComponent) throw new Error('请更新到 Obsidian 1.11.4 或更高版本。');
     this.settings = Object.assign({}, defaults, await this.loadData());
+    this.settings.retainedEmptyDirectories = this.validRetainedDirectories(this.settings.retainedEmptyDirectories);
+    this.directoryTokens = new Set();
     this.stopped = false;
     this.ready = false;
     this.confirmationModal = null;
@@ -2665,6 +2889,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
 
     for (const event of ['create', 'modify', 'rename', 'delete']) {
       this.registerEvent(this.app.vault.on(event, (file, previous) => {
+        this.noteDirectoryEvent(file.path, event === 'rename' ? previous : null);
         const paths = [file.path, ...(event === 'rename' && previous ? [previous] : [])].filter(path => this.visible(path));
         // A folder rename may have no per-file events; rescan its descendants.
         if (paths.length) this.scheduler.change(Array.isArray(file.children) ? [] : paths, { full: Array.isArray(file.children) });
@@ -2681,6 +2906,11 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     const parts = name.split('/');
     return parts[0] !== this.app.vault.configDir && parts.every(p => p && !p.startsWith('.'));
   }
+  validRetainedDirectories(paths) {
+    return [...new Set((Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' &&
+      !/[\\\u0000-\u001f]/.test(p) && !/^[A-Za-z]:/.test(p) && this.visible(p) &&
+      p.split('/')[0].normalize('NFC').toLowerCase() !== this.app.vault.configDir.normalize('NFC').toLowerCase()))].sort();
+  }
   remoteFor(s) {
     if (!s.url || !s.username || !s.secret || !s.device) throw new Error('请先填写地址、用户名、密钥和设备名称。');
     if (s.device.length > 64 || /[\u0000-\u001f]/.test(s.device)) throw new Error('请使用简短的设备名称。');
@@ -2693,8 +2923,9 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.configuring = true;
     try {
       this.remoteFor(draft);
-      await this.saveData({ ...draft });
-      this.settings = { ...draft };
+      const settings = { ...draft, retainedEmptyDirectories: this.settings.retainedEmptyDirectories };
+      await this.saveData(settings);
+      this.settings = settings;
       this.engine = null;
       this.result = null;
       this.confirmationModal?.close();
@@ -2730,7 +2961,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       local = new DiskVault(this.app.vault.adapter.getBasePath(), this.app.vault.configDir, guard);
       state = new DiskState(local.privateDir, s.url, s.username);
     }
-    this.engine = new SyncEngine({ remote, local, state, device: s.device });
+    this.engine = new SyncEngine({ remote, local, state, device: s.device,
+      retainedDirectories: () => this.settings.retainedEmptyDirectories });
     return this.engine;
   }
   schedule(delay) { this.scheduler.schedule(delay); }
@@ -2790,6 +3022,70 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.getEngine().local.invalidate?.(physical);
     return true;
   }
+  noteDirectoryEvent(path, previous) {
+    for (const token of this.directoryTokens) {
+      if ([path, previous].some(p => p && (underDirectory(p, token.path) || underDirectory(token.path, p)))) token.changed = true;
+    }
+  }
+  beginDirectoryTrash(path) {
+    const token = { path, file: this.app.vault.getAbstractFileByPath(path), changed: false };
+    this.directoryTokens.add(token); return token;
+  }
+  directoryTrashCurrent(token) {
+    return !!token && !token.changed && this.isActive() && document.visibilityState !== 'hidden' &&
+      Array.isArray(token.file?.children) && token.file.path === token.path &&
+      this.app.vault.getAbstractFileByPath(token.path) === token.file &&
+      !this.app.workspace.getLeavesOfType('markdown').some(leaf => leaf.view.file && underDirectory(leaf.view.file.path, token.path));
+  }
+  async trashEmptyDirectory(path, token, inspect) {
+    if (!this.directoryTrashCurrent(token)) return false;
+    // The second subtree listing is adjacent to the final synchronous token and
+    // preference checks. The remaining native-call race is recoverable in trash.
+    if (!await inspect() || !this.directoryTrashCurrent(token)) return false;
+    assertRecoverableTrash(this.app);
+    this.getEngine().local.forgetDirectoryHints?.(path);
+    // 1.15.1 returns false when OS trash refuses; older public versions resolve
+    // void on success. A refusal must not be reported as a cleaned directory.
+    return await this.app.fileManager.trashFile(token.file) !== false;
+  }
+  async saveRetainedDirectories(paths, reset = false) {
+    if (this.busy || this.configuring) { new Notice('请等当前操作完成再保留或重置。'); return false; }
+    const retainedEmptyDirectories = this.validRetainedDirectories(reset ? [] : [...this.settings.retainedEmptyDirectories, ...paths]);
+    this.configuring = true;
+    try {
+      const settings = { ...this.settings, retainedEmptyDirectories };
+      await this.saveData(settings); this.settings = settings; return true;
+    } finally { this.configuring = false; }
+  }
+  async runDirectories(paths, keep = false) {
+    if (!this.isActive() || document.visibilityState === 'hidden' || !this.ready || this.busy || this.configuring) return;
+    const lock = globalThis[activeVaults] ||= new Set(), key = this.app.vault.adapter;
+    if (lock.has(key)) { new Notice('正在同步，请等待完成'); return; }
+    lock.add(key); this.busy = true; this.scheduler.pause(); this.scheduler.running = true;
+    try {
+      const engine = this.getEngine();
+      let outcome;
+      if (keep) {
+        const emptyDirectories = await engine.retainDirectories(paths, async accepted => {
+          const settings = { ...this.settings, retainedEmptyDirectories: this.validRetainedDirectories([...this.settings.retainedEmptyDirectories, ...accepted]) };
+          await this.saveData(settings); this.settings = settings;
+        });
+        outcome = { emptyDirectories }; new Notice(`已保留 ${paths.length} 个空文件夹，仅本机生效。`);
+      } else {
+        outcome = await engine.cleanDirectories(paths, {
+          begin: path => this.beginDirectoryTrash(path), finish: token => this.directoryTokens.delete(token),
+          trash: (path, token, inspect) => this.trashEmptyDirectory(path, token, inspect),
+        });
+        new Notice(`已清理 ${outcome.cleaned.length} 个空文件夹，跳过 ${outcome.skipped.length} 个。内容、编辑器或同步状态已变化的目录会保留。`, 10000);
+      }
+      if (this.result) this.result = { ...this.result, emptyDirectories: outcome.emptyDirectories };
+      this.updateConfirmations(); return outcome;
+    } catch (error) { new Notice('空文件夹处理未完成：' + error.message, 10000); }
+    finally {
+      this.busy = false; lock.delete(key); this.scheduler.running = false; this.scheduler.armPoll();
+      if (this.scheduler.fullRequested > this.scheduler.fullCompleted || this.scheduler.eventDirty.size) this.scheduler.schedule(1000);
+    }
+  }
   openStatus() {
     const modal = new Modal(this.app);
     modal.titleEl.setText('飞牛同步状态');
@@ -2801,7 +3097,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
       const waiting = confirmationCount(r);
       if (waiting) modal.contentEl.createEl('p', { text: `有 ${waiting} 个文件等待确认。请打开“查看同步冲突”处理。` });
-      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '为保护目录内新写入的内容，已保留手机空文件夹；文件删除同步不受影响。' });
+      if (r.emptyDirectories?.length) modal.contentEl.createEl('p', { text: `有 ${r.emptyDirectories.length} 个空文件夹可清理。请打开“查看同步冲突”。` });
+      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '手机空文件夹不会自动清理；请在“查看同步冲突”的空文件夹组中确认清理。' });
     }
     if (this.result?.stats) {
       const s = this.result.stats;

@@ -8,10 +8,11 @@ const { SyncEngine } = require('./engine');
 const { SyncScheduler } = require('./scheduler');
 const { AdaptiveDavRemote: DavRemote } = require('./sharded');
 const { assertRecoverableTrash } = require('./deletion');
+const { underDirectory } = require('./directories');
 const { createConfirmationModal, confirmationKeys, confirmationCount } = require('./confirmations');
 const ConfirmationModal = createConfirmationModal({ Modal, Notice, Setting });
 
-const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false };
+const defaults = { url: '', username: '', secret: '', device: Platform.isMobile ? (Platform.isIosApp ? 'iPhone' : 'Android') : require('node:os').hostname().split('.')[0], auto: false, retainedEmptyDirectories: [] };
 const activeVaults = Symbol.for('obsidian-webdav-versions.active');
 
 class ResolveModal extends Modal {
@@ -37,6 +38,11 @@ class SyncSettings extends PluginSettingTab {
     new Setting(el).setName('同步状态').setDesc(p.lastError || p.statusMessage || '就绪')
       .addButton(b => b.setButtonText('立即同步').onClick(async () => { await p.run('sync', true); this.display(); }))
       .addButton(b => b.setButtonText('查看详情').onClick(() => p.openStatus()));
+    new Setting(el).setName(`已保留 ${p.settings.retainedEmptyDirectories.length} 个空文件夹`)
+      .setDesc('仅本机生效。重置后，下次全量同步会重新识别。')
+      .addButton(b => b.setButtonText('重置').onClick(async () => {
+        if (await p.saveRetainedDirectories([], true)) this.display();
+      }));
     if (Platform.isMobile) el.createEl('p', { text: '手机测试版：单个文件最多 128 MiB；首次接入先使用独立测试库，保持应用在前台。' });
     new Setting(el).setName('WebDAV 文件夹地址').setDesc('填写各设备共用的专用文件夹的完整 HTTPS 地址。请先在飞牛中建好该文件夹。')
       .addText(t => t.setPlaceholder('https://nas.example/笔记同步/').setValue(draft.url).onChange(v => { draft.url = v.trim(); }));
@@ -61,6 +67,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
   async onload() {
     if (!this.app.secretStorage || !SecretComponent) throw new Error('请更新到 Obsidian 1.11.4 或更高版本。');
     this.settings = Object.assign({}, defaults, await this.loadData());
+    this.settings.retainedEmptyDirectories = this.validRetainedDirectories(this.settings.retainedEmptyDirectories);
+    this.directoryTokens = new Set();
     this.stopped = false;
     this.ready = false;
     this.confirmationModal = null;
@@ -86,6 +94,7 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
 
     for (const event of ['create', 'modify', 'rename', 'delete']) {
       this.registerEvent(this.app.vault.on(event, (file, previous) => {
+        this.noteDirectoryEvent(file.path, event === 'rename' ? previous : null);
         const paths = [file.path, ...(event === 'rename' && previous ? [previous] : [])].filter(path => this.visible(path));
         // A folder rename may have no per-file events; rescan its descendants.
         if (paths.length) this.scheduler.change(Array.isArray(file.children) ? [] : paths, { full: Array.isArray(file.children) });
@@ -102,6 +111,11 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     const parts = name.split('/');
     return parts[0] !== this.app.vault.configDir && parts.every(p => p && !p.startsWith('.'));
   }
+  validRetainedDirectories(paths) {
+    return [...new Set((Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' &&
+      !/[\\\u0000-\u001f]/.test(p) && !/^[A-Za-z]:/.test(p) && this.visible(p) &&
+      p.split('/')[0].normalize('NFC').toLowerCase() !== this.app.vault.configDir.normalize('NFC').toLowerCase()))].sort();
+  }
   remoteFor(s) {
     if (!s.url || !s.username || !s.secret || !s.device) throw new Error('请先填写地址、用户名、密钥和设备名称。');
     if (s.device.length > 64 || /[\u0000-\u001f]/.test(s.device)) throw new Error('请使用简短的设备名称。');
@@ -114,8 +128,9 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.configuring = true;
     try {
       this.remoteFor(draft);
-      await this.saveData({ ...draft });
-      this.settings = { ...draft };
+      const settings = { ...draft, retainedEmptyDirectories: this.settings.retainedEmptyDirectories };
+      await this.saveData(settings);
+      this.settings = settings;
       this.engine = null;
       this.result = null;
       this.confirmationModal?.close();
@@ -151,7 +166,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       local = new DiskVault(this.app.vault.adapter.getBasePath(), this.app.vault.configDir, guard);
       state = new DiskState(local.privateDir, s.url, s.username);
     }
-    this.engine = new SyncEngine({ remote, local, state, device: s.device });
+    this.engine = new SyncEngine({ remote, local, state, device: s.device,
+      retainedDirectories: () => this.settings.retainedEmptyDirectories });
     return this.engine;
   }
   schedule(delay) { this.scheduler.schedule(delay); }
@@ -211,6 +227,70 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
     this.getEngine().local.invalidate?.(physical);
     return true;
   }
+  noteDirectoryEvent(path, previous) {
+    for (const token of this.directoryTokens) {
+      if ([path, previous].some(p => p && (underDirectory(p, token.path) || underDirectory(token.path, p)))) token.changed = true;
+    }
+  }
+  beginDirectoryTrash(path) {
+    const token = { path, file: this.app.vault.getAbstractFileByPath(path), changed: false };
+    this.directoryTokens.add(token); return token;
+  }
+  directoryTrashCurrent(token) {
+    return !!token && !token.changed && this.isActive() && document.visibilityState !== 'hidden' &&
+      Array.isArray(token.file?.children) && token.file.path === token.path &&
+      this.app.vault.getAbstractFileByPath(token.path) === token.file &&
+      !this.app.workspace.getLeavesOfType('markdown').some(leaf => leaf.view.file && underDirectory(leaf.view.file.path, token.path));
+  }
+  async trashEmptyDirectory(path, token, inspect) {
+    if (!this.directoryTrashCurrent(token)) return false;
+    // The second subtree listing is adjacent to the final synchronous token and
+    // preference checks. The remaining native-call race is recoverable in trash.
+    if (!await inspect() || !this.directoryTrashCurrent(token)) return false;
+    assertRecoverableTrash(this.app);
+    this.getEngine().local.forgetDirectoryHints?.(path);
+    // 1.15.1 returns false when OS trash refuses; older public versions resolve
+    // void on success. A refusal must not be reported as a cleaned directory.
+    return await this.app.fileManager.trashFile(token.file) !== false;
+  }
+  async saveRetainedDirectories(paths, reset = false) {
+    if (this.busy || this.configuring) { new Notice('请等当前操作完成再保留或重置。'); return false; }
+    const retainedEmptyDirectories = this.validRetainedDirectories(reset ? [] : [...this.settings.retainedEmptyDirectories, ...paths]);
+    this.configuring = true;
+    try {
+      const settings = { ...this.settings, retainedEmptyDirectories };
+      await this.saveData(settings); this.settings = settings; return true;
+    } finally { this.configuring = false; }
+  }
+  async runDirectories(paths, keep = false) {
+    if (!this.isActive() || document.visibilityState === 'hidden' || !this.ready || this.busy || this.configuring) return;
+    const lock = globalThis[activeVaults] ||= new Set(), key = this.app.vault.adapter;
+    if (lock.has(key)) { new Notice('正在同步，请等待完成'); return; }
+    lock.add(key); this.busy = true; this.scheduler.pause(); this.scheduler.running = true;
+    try {
+      const engine = this.getEngine();
+      let outcome;
+      if (keep) {
+        const emptyDirectories = await engine.retainDirectories(paths, async accepted => {
+          const settings = { ...this.settings, retainedEmptyDirectories: this.validRetainedDirectories([...this.settings.retainedEmptyDirectories, ...accepted]) };
+          await this.saveData(settings); this.settings = settings;
+        });
+        outcome = { emptyDirectories }; new Notice(`已保留 ${paths.length} 个空文件夹，仅本机生效。`);
+      } else {
+        outcome = await engine.cleanDirectories(paths, {
+          begin: path => this.beginDirectoryTrash(path), finish: token => this.directoryTokens.delete(token),
+          trash: (path, token, inspect) => this.trashEmptyDirectory(path, token, inspect),
+        });
+        new Notice(`已清理 ${outcome.cleaned.length} 个空文件夹，跳过 ${outcome.skipped.length} 个。内容、编辑器或同步状态已变化的目录会保留。`, 10000);
+      }
+      if (this.result) this.result = { ...this.result, emptyDirectories: outcome.emptyDirectories };
+      this.updateConfirmations(); return outcome;
+    } catch (error) { new Notice('空文件夹处理未完成：' + error.message, 10000); }
+    finally {
+      this.busy = false; lock.delete(key); this.scheduler.running = false; this.scheduler.armPoll();
+      if (this.scheduler.fullRequested > this.scheduler.fullCompleted || this.scheduler.eventDirty.size) this.scheduler.schedule(1000);
+    }
+  }
   openStatus() {
     const modal = new Modal(this.app);
     modal.titleEl.setText('飞牛同步状态');
@@ -222,7 +302,8 @@ module.exports = class WebDAVVersionsPlugin extends Plugin {
       if (r.cleanedDirectories) modal.contentEl.createEl('p', { text: `已清理空文件夹 ${r.cleanedDirectories} 个。` });
       const waiting = confirmationCount(r);
       if (waiting) modal.contentEl.createEl('p', { text: `有 ${waiting} 个文件等待确认。请打开“查看同步冲突”处理。` });
-      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '为保护目录内新写入的内容，已保留手机空文件夹；文件删除同步不受影响。' });
+      if (r.emptyDirectories?.length) modal.contentEl.createEl('p', { text: `有 ${r.emptyDirectories.length} 个空文件夹可清理。请打开“查看同步冲突”。` });
+      if (r.directoryCleanupBlocked) modal.contentEl.createEl('p', { text: '手机空文件夹不会自动清理；请在“查看同步冲突”的空文件夹组中确认清理。' });
     }
     if (this.result?.stats) {
       const s = this.result.stats;

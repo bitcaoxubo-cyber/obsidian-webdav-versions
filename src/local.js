@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { directoryRecord, forgetDirectory } = require('./directories');
 
 const hash = (bytes, stats) => {
   if (stats) stats.hashBytes += typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.byteLength;
@@ -194,6 +195,7 @@ class DiskVault {
     this.guard = guard;
     this.hashCache = new Map();
     this.tracksStats = true;
+    this.syncAppliedDirectoryCleanup = true;
     this.transferBudget = 128 * 1024 * 1024;
     if (!configDir || /[\/\\]/.test(configDir) || configDir === '.' || configDir === '..') {
       throw new Error('不支持这个 Obsidian 配置目录');
@@ -226,17 +228,65 @@ class DiskVault {
   async list() {
     this.recover();
     const files = [];
+    const directories = new Map();
     const visit = async (base, prefix) => {
+      const record = directoryRecord(); directories.set(prefix.slice(0, -1), record);
       for (const e of await fsp.readdir(base, { withFileTypes: true })) {
-        if (e.isSymbolicLink() || e.name.startsWith('.') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) continue;
         const rel = prefix + e.name.normalize('NFC');
-        if (e.isDirectory()) await visit(this.filePath(rel), rel + '/');
-        else if (e.isFile()) files.push(rel);
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) { record.blocked = true; continue; }
+        if (e.name === '.DS_Store') { if (e.isFile()) record.files.add(rel); else record.blocked = true; continue; }
+        if (e.isDirectory()) { record.folders.add(rel); await visit(this.filePath(rel), rel + '/'); }
+        else if (e.isFile()) { record.files.add(rel); files.push(rel); }
         else throw new Error('笔记库包含特殊文件，请移出同步范围：' + rel);
       }
     };
     await visit(this.root, '');
+    this.directorySnapshot = directories;
     return files;
+  }
+
+  async pruneEmptyDirectories(directories) {
+    const ordered = [...new Set(directories)].sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+    for (const dir of ordered) this.filePath(dir);
+    const blocked = new Set();
+    let removed = 0;
+    for (const dir of ordered) {
+      if (blocked.has(dir)) continue;
+      try {
+        // No preliminary emptiness check: the kernel rejects any content,
+        // including a file created immediately before this call.
+        await fsp.rmdir(this.filePath(dir));
+        forgetDirectory(this.directorySnapshot, dir);
+        removed++;
+      } catch (error) {
+        if (!['ENOTEMPTY', 'EEXIST', 'ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+        // A failed child ends this ancestor chain, but not independent siblings.
+        for (let slash = dir.lastIndexOf('/'); slash > 0; slash = dir.lastIndexOf('/', slash - 1)) blocked.add(dir.slice(0, slash));
+      }
+    }
+    return removed;
+  }
+
+  validateDirectory(dir) { this.filePath(dir); }
+  async inspectDirectories(dir) {
+    this.validateDirectory(dir);
+    const records = new Map();
+    const visit = async name => {
+      const file = this.filePath(name);
+      if (!statMaybe(file)?.isDirectory()) return false;
+      const record = directoryRecord(); records.set(name, record);
+      for (const e of await fsp.readdir(file, { withFileTypes: true })) {
+        const child = name + '/' + e.name.normalize('NFC');
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store')) record.blocked = true;
+        else if (e.isDirectory() && e.name !== '.DS_Store') {
+          record.folders.add(child); if (!await visit(child)) record.blocked = true;
+        } else if (e.isFile()) record.files.add(child);
+        else record.blocked = true;
+      }
+      return true;
+    };
+    try { return await visit(dir) ? records : null; }
+    catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
   }
 
   readFile(file, limit) {

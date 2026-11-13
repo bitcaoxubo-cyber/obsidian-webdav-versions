@@ -1,4 +1,5 @@
 'use strict';
+const { directoryRecord } = require('./directories');
 const { bytes, text, arrayBuffer, digest, sha256, randomUUID } = require('./bytes');
 
 // Native requestUrl buffers responses; keep mobile files below a conservative cap.
@@ -389,15 +390,18 @@ class MobileVault extends AdapterIO {
     this.checkActive();
     this.statHints.clear();
     const files = [];
+    const directories = new Map();
     const visit = async dir => {
       const listed = await this.adapter.list(dir);
+      const record = directoryRecord(); directories.set(dir, record);
       for (const p of [...listed.files, ...listed.folders]) {
         // Validate adapter output rather than accidentally scanning beyond the vault.
         if ((dir ? !p.startsWith(dir + '/') : p.startsWith('/')) || p.slice(dir ? dir.length + 1 : 0).includes('/')) throw new Error('本地目录清单无效。');
-        if (p.split('/').some(v => v.startsWith('.')) || p.split('/')[0].toLowerCase() === this.configDir.toLowerCase()) continue;
+        if (p.split('/').some(v => v.startsWith('.')) || p.split('/')[0].toLowerCase() === this.configDir.toLowerCase()) { record.blocked = true; continue; }
         this.path(p);
-        if (listed.folders.includes(p)) await visit(p);
+        if (listed.folders.includes(p)) { record.folders.add(p); await visit(p); }
         else {
+          record.files.add(p);
           const st = await this.adapter.stat(p);
           if (!st || st.type !== 'file') throw new Error('扫描期间文件发生变化，请重试。');
           if (st.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + p);
@@ -406,7 +410,7 @@ class MobileVault extends AdapterIO {
         }
       }
     };
-    await visit(''); return files;
+    await visit(''); this.directorySnapshot = directories; return files;
   }
   async pruneEmptyDirectories(directories) {
     const ordered = [...new Set(directories)];
@@ -455,6 +459,28 @@ class MobileVault extends AdapterIO {
       }
     }
     return removed;
+  }
+  validateDirectory(dir) { this.path(dir); }
+  async inspectDirectories(dir) {
+    this.path(dir); this.checkActive();
+    const records = new Map();
+    const visit = async name => {
+      this.path(name); this.checkActive();
+      if ((await this.adapter.stat(name))?.type !== 'folder') return false;
+      const record = directoryRecord(); records.set(name, record);
+      const listed = await this.adapter.list(name);
+      for (const p of [...listed.files, ...listed.folders]) {
+        if (!p.startsWith(name + '/') || p.slice(name.length + 1).includes('/')) throw new Error('本地目录清单无效。');
+        if (p.split('/').some(v => v.startsWith('.'))) { record.blocked = true; continue; }
+        if (listed.folders.includes(p)) { record.folders.add(p); if (!await visit(p)) record.blocked = true; }
+        else record.files.add(p);
+      }
+      return true;
+    };
+    return await visit(dir) ? records : null;
+  }
+  forgetDirectoryHints(dir) {
+    for (const cached of this.confirmedDirectories) if (cached === dir || cached.startsWith(dir + '/')) this.confirmedDirectories.delete(cached);
   }
   async finish() {
     if (!await this.adapter.exists(this.transaction)) return;

@@ -4,6 +4,7 @@ const { indexRevisions, isConflictPath, makeRevision, project, safePath, validat
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 const { parallel } = require('./sharded');
+const { parentDirectory, underDirectory, forgetDirectory, residualDirectories } = require('./directories');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -58,7 +59,7 @@ function snapshot(revisions) {
 }
 
 class SyncEngine {
-  constructor({ remote, local, state, device, concurrency = 4 }) {
+  constructor({ remote, local, state, device, concurrency = 4, retainedDirectories = () => [] }) {
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Transfer concurrency must be between 1 and 4');
     this.concurrency = concurrency;
     this.remote = remote;
@@ -67,6 +68,8 @@ class SyncEngine {
     this.device = device;
     this.queue = Promise.resolve();
     this.staleCopies = new Map();
+    this.retainedDirectories = retainedDirectories;
+    this.emptyDirectories = [];
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
@@ -75,6 +78,50 @@ class SyncEngine {
     return this._enqueue(() => {
       if (!Array.isArray(actions)) throw new Error('Expected a list of confirmation actions');
       return this._run(undefined, { full: true, decisions: actions, decisionCallbacks: callbacks });
+    });
+  }
+
+  cleanDirectories(paths, callbacks = {}) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string')) throw new Error('空文件夹清理请求无效。');
+      const selected = [...new Set(paths)];
+      // Validate the whole request before performing even one removal.
+      for (const dir of selected) this.local.validateDirectory(dir);
+      const result = { cleaned: [], skipped: [] };
+      for (const dir of selected) {
+        const token = callbacks.begin?.(dir);
+        try {
+          const inspect = async () => {
+            const records = await this.local.inspectDirectories(dir);
+            return this._residualDirectories(records).some(e => e.path === dir) ? records : null;
+          };
+          const records = this.directoryContext ? await inspect() : null;
+          if (!records) { result.skipped.push(dir); continue; }
+          const entry = this._residualDirectories(records).find(e => e.path === dir);
+          let cleaned = false;
+          if (this.local.syncAppliedDirectoryCleanup && !entry.containsDSStore) {
+            cleaned = await this.local.pruneEmptyDirectories(records.keys()) === records.size;
+          } else if (callbacks.trash) {
+            cleaned = await callbacks.trash(dir, token, inspect);
+          }
+          if (cleaned) {
+            result.cleaned.push(dir); forgetDirectory(this.local.directorySnapshot, dir);
+            this.emptyDirectories = this.emptyDirectories.filter(e => !underDirectory(e.path, dir));
+          } else result.skipped.push(dir);
+        } finally { callbacks.finish?.(token); }
+      }
+      result.emptyDirectories = this.emptyDirectories;
+      return result;
+    });
+  }
+
+  retainDirectories(paths, save) {
+    return this._enqueue(async () => {
+      if (!Array.isArray(paths)) throw new Error('空文件夹保留请求无效。');
+      for (const dir of paths) this.local.validateDirectory(dir);
+      await save(paths);
+      this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+      return this.emptyDirectories;
     });
   }
 
@@ -215,7 +262,7 @@ class SyncEngine {
       revs: new Map(), splitJournal: splitSupported && !embedded, legacyPending: splitSupported && !!embedded,
       changed: disk === null, sinceCheckpoint: 0, checkpointAt: Date.now(),
       receiptSupported, receiptSequence, completedOperations: new Set(), receiptsNeedCleanup: false,
-      cleanupPaths: new Set() };
+      cleanupPaths: new Set(), appliedDeletions: new Set() };
     s.savedSnapshot = disk === null ? null : JSON.stringify(this._snapshot(s));
     for (const r of await this.remote.listRevisions()) {
       validateRevision(r);
@@ -754,7 +801,10 @@ class SyncEngine {
             if (absent) this._setAbsent(s, absent.path, absent.parents);
             await this._completeOperation(s, next, absent, known);
             if (next) result.downloaded++;
-            else result.deleted++;
+            else {
+              result.deleted++; s.appliedDeletions.add(physical);
+              this.local.directorySnapshot?.get(parentDirectory(physical))?.files.delete(physical);
+            }
           } else {
             this.observed.delete(physical);
             deferred.add(physical); // An editor change after the scan must survive.
@@ -783,15 +833,24 @@ class SyncEngine {
         target.add(name.slice(0, slash));
       }
     };
-    // Full rounds also repair folders left by older clients or an interrupted
-    // cleanup. Incremental rounds do no directory I/O without a new deletion.
-    for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
-      const versions = view.versions.get(name);
-      if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+    // Desktop only prunes files actually removed by this round's successful
+    // apply CAS. Local edits, old tombstones and crash recovery are not origins.
+    // Keep the legacy mobile adapter's opt-in/test behavior unchanged.
+    if (this.local.syncAppliedDirectoryCleanup) {
+      for (const name of s.appliedDeletions) parents(name, directories);
+    } else {
+      for (const name of this.full ? s.absent.keys() : s.cleanupPaths) {
+        const versions = view.versions.get(name);
+        if (s.absent.has(name) && versions?.size === 1 && versions.has(null) && !deferred.has(name)) parents(name, directories);
+      }
     }
     if (!directories.size) return;
-    for (const names of [view.files.keys(), s.files.keys(), deferred]) {
+    for (const names of [view.files.keys(), s.files.keys(), deferred, this.nextStaleCopies.keys()]) {
       for (const name of names) parents(name, protectedDirectories);
+    }
+    for (const dir of this.retainedDirectories()) {
+      protectedDirectories.add(dir); parents(dir, protectedDirectories);
+      for (const candidate of directories) if (candidate.startsWith(dir + '/')) protectedDirectories.add(candidate);
     }
     for (const dir of protectedDirectories) directories.delete(dir);
     if (directories.size) result.cleanedDirectories = await this.local.pruneEmptyDirectories(directories);
@@ -814,6 +873,9 @@ class SyncEngine {
   }
 
   async _runOnce(selected, options = {}) {
+    // A failed sync may leave a journal. Never authorize directory cleanup using
+    // an older successful round until a new successful round restores context.
+    this.directoryContext = null;
     const result = counts();
     const started = Date.now();
     this.stats = result.stats;
@@ -897,8 +959,19 @@ class SyncEngine {
       .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
     result.stalePaths = result.staleCopies.map(entry => entry.path);
     result.confirmations = this._confirmationGroups(s, after, result.staleCopies);
+    this.directoryContext = { history: [...after.byPath.keys()],
+      protectedPaths: [...after.files.keys(), ...s.files.keys(), ...deferred, ...this.staleCopies.keys(),
+        ...(s.pending ? [s.pending.physical] : [])] };
+    if (this.full) this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+    result.emptyDirectories = this.emptyDirectories;
     result.stats.durationMs = Date.now() - started;
     return result;
+  }
+
+  _residualDirectories(records) {
+    if (!this.directoryContext) return [];
+    return residualDirectories(records, { ...this.directoryContext, retained: this.retainedDirectories(),
+      allowDSStore: this.local.syncAppliedDirectoryCleanup === true });
   }
 }
 
