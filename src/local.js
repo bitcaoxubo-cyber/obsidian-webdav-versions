@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { directoryRecord, forgetDirectory } = require('./directories');
 
 const hash = (bytes, stats) => {
   if (stats) stats.hashBytes += typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.byteLength;
@@ -227,16 +228,20 @@ class DiskVault {
   async list() {
     this.recover();
     const files = [];
+    const directories = new Map();
     const visit = async (base, prefix) => {
+      const record = directoryRecord(); directories.set(prefix.slice(0, -1), record);
       for (const e of await fsp.readdir(base, { withFileTypes: true })) {
-        if (e.isSymbolicLink() || e.name.startsWith('.') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) continue;
         const rel = prefix + e.name.normalize('NFC');
-        if (e.isDirectory()) await visit(this.filePath(rel), rel + '/');
-        else if (e.isFile()) files.push(rel);
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) { record.blocked = true; continue; }
+        if (e.name === '.DS_Store') { if (e.isFile()) record.files.add(rel); else record.blocked = true; continue; }
+        if (e.isDirectory()) { record.folders.add(rel); await visit(this.filePath(rel), rel + '/'); }
+        else if (e.isFile()) { record.files.add(rel); files.push(rel); }
         else throw new Error('笔记库包含特殊文件，请移出同步范围：' + rel);
       }
     };
     await visit(this.root, '');
+    this.directorySnapshot = directories;
     return files;
   }
 
@@ -251,6 +256,7 @@ class DiskVault {
         // No preliminary emptiness check: the kernel rejects any content,
         // including a file created immediately before this call.
         await fsp.rmdir(this.filePath(dir));
+        forgetDirectory(this.directorySnapshot, dir);
         removed++;
       } catch (error) {
         if (!['ENOTEMPTY', 'EEXIST', 'ENOENT', 'ENOTDIR'].includes(error.code)) throw error;

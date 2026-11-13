@@ -4,6 +4,7 @@ const { indexRevisions, isConflictPath, makeRevision, project, safePath, validat
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 const { parallel } = require('./sharded');
+const { parentDirectory, residualDirectories } = require('./directories');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -68,6 +69,7 @@ class SyncEngine {
     this.queue = Promise.resolve();
     this.staleCopies = new Map();
     this.retainedDirectories = retainedDirectories;
+    this.emptyDirectories = [];
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
@@ -755,7 +757,10 @@ class SyncEngine {
             if (absent) this._setAbsent(s, absent.path, absent.parents);
             await this._completeOperation(s, next, absent, known);
             if (next) result.downloaded++;
-            else { result.deleted++; s.appliedDeletions.add(physical); }
+            else {
+              result.deleted++; s.appliedDeletions.add(physical);
+              this.local.directorySnapshot?.get(parentDirectory(physical))?.files.delete(physical);
+            }
           } else {
             this.observed.delete(physical);
             deferred.add(physical); // An editor change after the scan must survive.
@@ -907,8 +912,19 @@ class SyncEngine {
       .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
     result.stalePaths = result.staleCopies.map(entry => entry.path);
     result.confirmations = this._confirmationGroups(s, after, result.staleCopies);
+    this.directoryContext = { history: [...after.byPath.keys()],
+      protectedPaths: [...after.files.keys(), ...s.files.keys(), ...deferred, ...this.staleCopies.keys(),
+        ...(s.pending ? [s.pending.physical] : [])] };
+    if (this.full) this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+    result.emptyDirectories = this.emptyDirectories;
     result.stats.durationMs = Date.now() - started;
     return result;
+  }
+
+  _residualDirectories(records) {
+    if (!this.directoryContext) return [];
+    return residualDirectories(records, { ...this.directoryContext, retained: this.retainedDirectories(),
+      allowDSStore: this.local.syncAppliedDirectoryCleanup === true });
   }
 }
 

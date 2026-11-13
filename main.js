@@ -573,6 +573,51 @@ function assertRecoverableTrash(app) {
 module.exports = { assertRecoverableTrash };
 
 },
+"directories":function(module,exports,require){
+'use strict';
+
+const parentDirectory = name => name.slice(0, Math.max(0, name.lastIndexOf('/')));
+const underDirectory = (name, dir) => name === dir || name.startsWith(dir + '/');
+function addParents(name, set) {
+  for (let slash = name.lastIndexOf('/'); slash > 0; slash = name.lastIndexOf('/', slash - 1)) set.add(name.slice(0, slash));
+}
+function directoryRecord() { return { files: new Set(), folders: new Set(), blocked: false }; }
+function forgetDirectory(records, dir) {
+  if (!records) return;
+  for (const name of records.keys()) if (underDirectory(name, dir)) records.delete(name);
+  records.get(parentDirectory(dir))?.folders.delete(dir);
+}
+
+// Pure calculation over the directory entries already seen by list(). No I/O,
+// persistent progress or remote directory objects are needed.
+function residualDirectories(records, { history, protectedPaths = [], retained = [], allowDSStore = false }) {
+  if (!records) return [];
+  const historical = new Set(), protectedDirs = new Set(), eligible = new Map();
+  for (const name of history) addParents(name, historical);
+  for (const name of protectedPaths) { protectedDirs.add(name); addParents(name, protectedDirs); }
+  for (const dir of retained) { protectedDirs.add(dir); addParents(dir, protectedDirs); }
+  const ordered = [...records.keys()].filter(Boolean).sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b));
+  for (const dir of ordered) {
+    const record = records.get(dir);
+    if (record.blocked || !historical.has(dir) || protectedDirs.has(dir) || retained.some(p => underDirectory(dir, p))) continue;
+    let ds = false, blocked = false, count = 0;
+    for (const file of record.files) {
+      if (allowDSStore && file === dir + '/.DS_Store') ds = true;
+      else { blocked = true; break; }
+    }
+    if (blocked) continue;
+    for (const child of record.folders) {
+      const e = eligible.get(child);
+      if (!e) { blocked = true; break; }
+      count += 1 + e.subdirectoryCount; ds ||= e.containsDSStore;
+    }
+    if (!blocked) eligible.set(dir, { path: dir, subdirectoryCount: count, containsDSStore: ds });
+  }
+  return [...eligible.values()].filter(e => !eligible.has(parentDirectory(e.path))).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
+module.exports = { parentDirectory, underDirectory, addParents, directoryRecord, forgetDirectory, residualDirectories };
+
+},
 "engine":function(module,exports,require){
 'use strict';
 
@@ -580,6 +625,7 @@ const { indexRevisions, isConflictPath, makeRevision, project, safePath, validat
 
 const { base64, fromBase64, sha256, randomUUID } = require('./bytes');
 const { parallel } = require('./sharded');
+const { parentDirectory, residualDirectories } = require('./directories');
 
 const hashOf = async bytes => bytes === null ? null : sha256(bytes);
 const sameIds = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
@@ -644,6 +690,7 @@ class SyncEngine {
     this.queue = Promise.resolve();
     this.staleCopies = new Map();
     this.retainedDirectories = retainedDirectories;
+    this.emptyDirectories = [];
   }
 
   sync(options = {}) { return this._enqueue(() => this._run(undefined, options)); }
@@ -1331,7 +1378,10 @@ class SyncEngine {
             if (absent) this._setAbsent(s, absent.path, absent.parents);
             await this._completeOperation(s, next, absent, known);
             if (next) result.downloaded++;
-            else { result.deleted++; s.appliedDeletions.add(physical); }
+            else {
+              result.deleted++; s.appliedDeletions.add(physical);
+              this.local.directorySnapshot?.get(parentDirectory(physical))?.files.delete(physical);
+            }
           } else {
             this.observed.delete(physical);
             deferred.add(physical); // An editor change after the scan must survive.
@@ -1483,8 +1533,19 @@ class SyncEngine {
       .map(entry => ({ path: entry.path, hash: entry.hash, tips: [...entry.tips] }));
     result.stalePaths = result.staleCopies.map(entry => entry.path);
     result.confirmations = this._confirmationGroups(s, after, result.staleCopies);
+    this.directoryContext = { history: [...after.byPath.keys()],
+      protectedPaths: [...after.files.keys(), ...s.files.keys(), ...deferred, ...this.staleCopies.keys(),
+        ...(s.pending ? [s.pending.physical] : [])] };
+    if (this.full) this.emptyDirectories = this._residualDirectories(this.local.directorySnapshot);
+    result.emptyDirectories = this.emptyDirectories;
     result.stats.durationMs = Date.now() - started;
     return result;
+  }
+
+  _residualDirectories(records) {
+    if (!this.directoryContext) return [];
+    return residualDirectories(records, { ...this.directoryContext, retained: this.retainedDirectories(),
+      allowDSStore: this.local.syncAppliedDirectoryCleanup === true });
   }
 }
 
@@ -1497,6 +1558,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { directoryRecord, forgetDirectory } = require('./directories');
 
 const hash = (bytes, stats) => {
   if (stats) stats.hashBytes += typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.byteLength;
@@ -1721,16 +1783,20 @@ class DiskVault {
   async list() {
     this.recover();
     const files = [];
+    const directories = new Map();
     const visit = async (base, prefix) => {
+      const record = directoryRecord(); directories.set(prefix.slice(0, -1), record);
       for (const e of await fsp.readdir(base, { withFileTypes: true })) {
-        if (e.isSymbolicLink() || e.name.startsWith('.') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) continue;
         const rel = prefix + e.name.normalize('NFC');
-        if (e.isDirectory()) await visit(this.filePath(rel), rel + '/');
-        else if (e.isFile()) files.push(rel);
+        if (e.isSymbolicLink() || (e.name.startsWith('.') && e.name !== '.DS_Store') || (!prefix && e.name.toLowerCase() === this.configDir.toLowerCase())) { record.blocked = true; continue; }
+        if (e.name === '.DS_Store') { if (e.isFile()) record.files.add(rel); else record.blocked = true; continue; }
+        if (e.isDirectory()) { record.folders.add(rel); await visit(this.filePath(rel), rel + '/'); }
+        else if (e.isFile()) { record.files.add(rel); files.push(rel); }
         else throw new Error('笔记库包含特殊文件，请移出同步范围：' + rel);
       }
     };
     await visit(this.root, '');
+    this.directorySnapshot = directories;
     return files;
   }
 
@@ -1745,6 +1811,7 @@ class DiskVault {
         // No preliminary emptiness check: the kernel rejects any content,
         // including a file created immediately before this call.
         await fsp.rmdir(this.filePath(dir));
+        forgetDirectory(this.directorySnapshot, dir);
         removed++;
       } catch (error) {
         if (!['ENOTEMPTY', 'EEXIST', 'ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
@@ -2025,6 +2092,7 @@ module.exports={migrateStorage,rollbackStorage,verifyObject};
 },
 "mobile":function(module,exports,require){
 'use strict';
+const { directoryRecord } = require('./directories');
 const { bytes, text, arrayBuffer, digest, sha256, randomUUID } = require('./bytes');
 
 // Native requestUrl buffers responses; keep mobile files below a conservative cap.
@@ -2415,15 +2483,18 @@ class MobileVault extends AdapterIO {
     this.checkActive();
     this.statHints.clear();
     const files = [];
+    const directories = new Map();
     const visit = async dir => {
       const listed = await this.adapter.list(dir);
+      const record = directoryRecord(); directories.set(dir, record);
       for (const p of [...listed.files, ...listed.folders]) {
         // Validate adapter output rather than accidentally scanning beyond the vault.
         if ((dir ? !p.startsWith(dir + '/') : p.startsWith('/')) || p.slice(dir ? dir.length + 1 : 0).includes('/')) throw new Error('本地目录清单无效。');
-        if (p.split('/').some(v => v.startsWith('.')) || p.split('/')[0].toLowerCase() === this.configDir.toLowerCase()) continue;
+        if (p.split('/').some(v => v.startsWith('.')) || p.split('/')[0].toLowerCase() === this.configDir.toLowerCase()) { record.blocked = true; continue; }
         this.path(p);
-        if (listed.folders.includes(p)) await visit(p);
+        if (listed.folders.includes(p)) { record.folders.add(p); await visit(p); }
         else {
+          record.files.add(p);
           const st = await this.adapter.stat(p);
           if (!st || st.type !== 'file') throw new Error('扫描期间文件发生变化，请重试。');
           if (st.size > MOBILE_LIMIT) throw new Error('手机单个文件上限为 128 MiB：' + p);
@@ -2432,7 +2503,7 @@ class MobileVault extends AdapterIO {
         }
       }
     };
-    await visit(''); return files;
+    await visit(''); this.directorySnapshot = directories; return files;
   }
   async pruneEmptyDirectories(directories) {
     const ordered = [...new Set(directories)];
