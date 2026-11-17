@@ -251,3 +251,52 @@ fs.readFileSync = function () {
   assert.equal(status.state, 'paused');
   assert.equal(status.pendingDeletions.count, 21);
 });
+
+test('recovery fails closed for missing, malformed, regressed or internally inconsistent durable records', async t => {
+  const { DiskState } = require('../src/local');
+  const { Recovery } = require('../headless/recovery');
+  const a = 'a'.repeat(64), b = 'b'.repeat(64), c = 'c'.repeat(64), missing = 'd'.repeat(64);
+  const entry = id => ({ operationId: id, kind: 'apply', physical: 'a.md', next: null, absent: { path: 'a.md', parents: [b] }, known: [b] });
+  const cases = {
+    'missing main state': async state => fs.unlinkSync(state.file),
+    'malformed JSON': async state => fs.writeFileSync(state.file, '{'),
+    'regressed watermark': async (state, disk) => state.save({ ...disk, receiptSequence: 6 }),
+    'negative watermark': async (state, disk) => state.save({ ...disk, receiptSequence: -1 }),
+    'duplicate absent path': async (state, disk) => state.save({ ...disk, absent: [['gone.md', [b]], ['gone.md', [b]]] }),
+    'absent references unknown revision': async (state, disk) => state.save({ ...disk, absent: [['gone.md', [missing]]] }),
+    'binding references unknown revision': async (state, disk) => state.save({ ...disk, files: [['a.md', { path: 'a.md', blob: c, parents: [missing] }]] }),
+    'review references unknown revision': async (state, disk) => state.save({ ...disk, reviewed: [['a.md', [missing]]] }),
+    'corrupt receipt checksum': async state => { await state.loadReceipts(7); await state.saveReceipt(entry('one')); const file = path.join(state.receiptDirectory, 'receipt-0000000000000008.json'); const row = JSON.parse(fs.readFileSync(file)); row.payload += ' '; fs.writeFileSync(file, JSON.stringify(row)); },
+    'receipt references undeclared deletion': async state => { await state.loadReceipts(7); await state.saveReceipt({ ...entry('one'), absent: { path: 'a.md', parents: [missing] } }); },
+    'duplicate completed operation': async state => { await state.loadReceipts(7); await state.saveReceipt(entry('one')); await state.saveReceipt(entry('one')); },
+    'receipt sequence gap': async state => { await state.loadReceipts(7); await state.saveReceipt(entry('one')); fs.renameSync(path.join(state.receiptDirectory, 'receipt-0000000000000008.json'), path.join(state.receiptDirectory, 'receipt-0000000000000009.json')); },
+    'corrupt pending checksum': async state => { await state.savePending(entry('one')); const row = JSON.parse(fs.readFileSync(state.pendingFile)); row.hash = missing; fs.writeFileSync(state.pendingFile, JSON.stringify(row)); },
+    'pending references undeclared deletion': async state => state.savePending({ ...entry('one'), absent: { path: 'a.md', parents: [missing] } }),
+  };
+  for (const [name, damage] of Object.entries(cases)) await t.test(name, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hv-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config = { stateDir: root, url: 'https://example.invalid/vault/', username: 'local-fixture' };
+    const state = new DiskState(root, config.url, config.username);
+    const disk = { version: 1, known: [a, b], files: [['a.md', { path: 'a.md', blob: c, parents: [a] }]], reviewed: [], absent: [['gone.md', [b]]], pending: null, receiptSequence: 7 };
+    await state.save(disk);
+    const recovery = new Recovery(config), checkpoint = await recovery.checkpoint();
+    assert.deepEqual(await recovery.deletedSince(checkpoint), new Set());
+    await damage(state, disk);
+    await assert.rejects(recovery.deletedSince(checkpoint), /恢复记录缺失、损坏或与删除保护清单不一致/);
+  });
+});
+
+test('baseline checkpoint shape is validated even if its outer checksum is recomputed', async t => {
+  const { Gates } = require('../headless/gates');
+  const { createHash } = require('node:crypto');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const config = { stateDir: path.join(root, 'state'), vaultDir: path.join(root, 'vault'), settleSeconds: 0, deletionLimit: 20 };
+  fs.mkdirSync(config.stateDir); fs.mkdirSync(config.vaultDir);
+  const gates = new Gates(config, { sleep: async () => {} }); gates.initializeBaseline();
+  const files = [], checkpoint = { receiptSequence: 0, absent: [['unsafe\\name.md', ['a'.repeat(64)]]] };
+  const checksum = createHash('sha256').update(JSON.stringify({ files, checkpoint })).digest('hex');
+  fs.writeFileSync(gates.baselineFile, JSON.stringify({ version: 1, files, checkpoint, checksum }));
+  await assert.rejects(gates.check(), /删除保护清单缺失或损坏/);
+});

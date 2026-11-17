@@ -33,9 +33,14 @@ function pairs(value, check) {
 function absentPairs(value) {
   return pairs(value, ([name, parents]) => [logical(name), ids(parents)]);
 }
-function binding(value) {
-  if (!object(value) || !HASH.test(value.blob)) invalid();
-  logical(value.path); ids(value.parents);
+function references(parents, known) {
+  const result = ids(parents);
+  if (known && !result.every(id => known.has(id))) invalid();
+  return result;
+}
+function binding(value, known) {
+  if (!object(value) || typeof value.blob !== 'string' || !HASH.test(value.blob)) invalid();
+  logical(value.path); references(value.parents, known);
 }
 function watermark(value) {
   if (!Number.isSafeInteger(value) || value < 0) invalid();
@@ -52,11 +57,12 @@ function validateCheckpoint(value) {
 }
 function operation(entry) {
   if (!object(entry) || !['push', 'apply'].includes(entry.kind) || typeof entry.operationId !== 'string' || !entry.operationId.length) invalid();
-  physical(entry.physical); ids(entry.known);
-  if (entry.next !== null) binding(entry.next);
+  physical(entry.physical);
+  const known = new Set(ids(entry.known));
+  if (entry.next !== null) binding(entry.next, known);
   if (entry.absent !== null) {
     if (!object(entry.absent) || entry.next !== null || logical(entry.absent.path) !== physical(entry.physical)) invalid();
-    ids(entry.absent.parents);
+    references(entry.absent.parents, known);
   }
   return entry;
 }
@@ -73,10 +79,10 @@ class Recovery {
       disk = await this.state.load();
       if (disk !== null) {
         if (!object(disk) || disk.version !== 1 || !Array.isArray(disk.files) || !Array.isArray(disk.reviewed)) invalid();
-        ids(disk.known, false);
-        pairs(disk.files, ([name, value]) => { binding(value); return [physical(name), value]; });
-        pairs(disk.reviewed, ([name, parents]) => [logical(name), ids(parents)]);
-        absentPairs(disk.absent);
+        const known = new Set(ids(disk.known, false));
+        pairs(disk.files, ([name, value]) => { binding(value, known); return [physical(name), value]; });
+        pairs(disk.reviewed, ([name, parents]) => [logical(name), references(parents, known)]);
+        for (const [, parents] of absentPairs(disk.absent)) references(parents, known);
         if (disk.pending !== null) invalid(); // New headless instances never use legacy embedded journals.
       }
       const sequence = watermark(disk?.receiptSequence ?? 0);
@@ -84,9 +90,12 @@ class Recovery {
       pending = await this.state.loadPending();
       const absent = absentPairs(disk?.absent || []);
       let currentSequence = sequence;
+      const completed = new Set();
       for (const row of receipts) {
         if (row.sequence !== ++currentSequence) invalid();
         const entry = operation(row.entry);
+        if (completed.has(entry.operationId)) invalid();
+        completed.add(entry.operationId);
         if (entry.absent) absent.set(logical(entry.absent.path), ids(entry.absent.parents));
         else if (entry.next && physical(entry.physical) === logical(entry.next.path)) absent.delete(logical(entry.next.path));
       }
