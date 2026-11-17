@@ -1,0 +1,27 @@
+NAS first sync (empty folder)      : up 0 down 4 del 0 conflicts 0 | a.md b.md c.md proj/d.md
+
+1. agent creates, edits and deletes plain files in the NAS folder
+   NAS   : up 3 down 0 del 0 conflicts 0
+   Mac   : up 0 down 2 del 1 conflicts 0 | a.md c.md inbox/new.md proj/d.md | a.md = a edited by the agent
+   phone : up 0 down 2 del 1 conflicts 0 | a.md c.md inbox/new.md proj/d.md
+
+2. Mac and the agent edit the same note before either sees the other
+   NAS   : up 1 down 1 del 0 conflicts 1 | a.md | c (sync-conflict Mac …).md | c.md | inbox/new.md | proj/d.md
+   Mac   : up 0 down 2 del 0 conflicts 1
+   Mac now holds: "c edited on Mac" and "c edited by the agent"
+
+3. phone deletes a note while the agent edits it
+   NAS   : up 1 down 0 del 0 conflicts 2
+   phone : up 0 down 1 del 0 conflicts 2 | d present: true
+
+4. the sync engine never overwrites an agent edit it has not seen
+   NAS   : up 1 down 2 del 0 conflicts 3 | a.md on NAS = "a edited again on Mac"
+
+4b. RISK: the sync runs while the upload from the agent is only half written
+   NAS   : up 1 down 0 del 0 conflicts 3
+   Mac   : up 0 down 2 del 0 conflicts 3 | Mac sees: "first half of a long note"
+   after the upload completes, Mac sees: "first half of a long note, second half arrives" | revisions stored for this note: 2
+
+5. RISK: the folder is wiped (agent mistake, or the share is not mounted)
+   NAS   : up 7 down 0 del 0 conflicts 0
+   Mac   : up 0 down 0 del 7 conflicts 0 | notes on Mac: 7 -> 0
