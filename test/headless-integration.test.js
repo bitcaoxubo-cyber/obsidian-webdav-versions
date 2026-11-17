@@ -8,6 +8,7 @@ const { fakeDav } = require('./helpers/headless-dav');
 const { Adapter } = require('./helpers/adapter');
 const { MobileVault, MobileState } = require('../src/mobile');
 const { SyncEngine } = require('../src/engine');
+const { makeRevision, digest, isConflictPath } = require('../src/protocol');
 const { init, createRunner } = require('../headless/runtime');
 
 function peer(dav, device) {
@@ -73,7 +74,7 @@ test('H5/H6: existing sharded v2 layout syncs through AdaptiveDavRemote without 
   assert.ok(!f.dav.calls.some(call => ['DELETE', 'MOVE'].includes(call.method)));
 });
 
-test('H7/H8/H9: conflicting edits retain both versions, delete/edit retains file and incoming update preserves unseen edit', async t => {
+test('H7/H8: conflicting edits retain both versions and delete/edit retains file', async t => {
   const f = await setup(t);
   f.mac.put('a.md', 'Mac concurrent'); await f.mac.sync(); f.put('a.md', 'Muse concurrent');
   let status = await f.runner.round(); assert.equal(status.state, 'ok'); assert.ok(status.conflicts.includes('a.md'));
@@ -83,8 +84,83 @@ test('H7/H8/H9: conflicting edits retain both versions, delete/edit retains file
   assert.ok(f.mac.names().some(n => n.includes(' (sync-conflict ')));
   f.phone.remove('b.md'); await f.phone.sync(); f.put('b.md', 'Muse survives deletion');
   status = await f.runner.round(); assert.equal(status.state, 'ok'); assert.equal(f.text('b.md'), 'Muse survives deletion');
-  f.mac.put('c.md', 'Incoming c'); await f.mac.sync(); f.put('c.md', 'Muse just typed c');
-  assert.equal((await f.runner.round()).state, 'ok'); assert.equal(f.text('c.md'), 'Muse just typed c');
+  checkSecret(f);
+});
+
+// Freeze only the next revision nonce; receipt operation identifiers retain
+// their real randomness. Fixed baseline + explicit nonces cover both canonical
+// path orderings without retry-until-lucky tests or changing engine behavior.
+async function withNextNonce(t, nonce, run) {
+  const crypto = globalThis.crypto, original = crypto.getRandomValues.bind(crypto);
+  const bytes = Buffer.from(nonce.replaceAll('-', ''), 'hex'); let consumed = false;
+  const mock = t.mock.method(crypto, 'getRandomValues', array => {
+    if (consumed) return original(array);
+    assert.equal(array.byteLength, 16); array.set(bytes); consumed = true; return array;
+  });
+  try { const result = await run(); assert.ok(consumed, 'the deterministic revision nonce was used'); return result; }
+  finally { mock.mock.restore(); }
+}
+function noteVersions(f, basename) {
+  return fs.readdirSync(f.config.vaultDir)
+    .filter(name => name === basename + '.md' || (name.startsWith(basename + ' (sync-conflict ') && isConflictPath(name) && / [0-9a-f]{64}\)\.md$/.test(name)))
+    .map(name => ({ name, text: f.text(name) }));
+}
+for (const [canonical, macNonce] of [
+  ['Mac', '00000000-0000-4000-8000-000000000001'],
+  ['Muse', '00000000-0000-4000-8000-000000000011'],
+]) test(`H9 revised: Muse content survives in original or standard conflict copy when ${canonical} sorts first`, async t => {
+  const f = await setup(t, []), remote = f.dav.remote();
+  const base = makeRevision({ path: 'c.md', blob: digest('original c.md'), device: 'Mac', nonce: 'H9-fixed-base' });
+  await remote.putBlob(base.blob, Buffer.from('original c.md')); await remote.putRevision(base);
+  assert.equal((await f.runner.round()).state, 'ok'); await f.mac.sync();
+  const museNonce = '00000000-0000-4000-8000-000000000001';
+  const macRevision = makeRevision({ path: 'c.md', parents: [base.id], blob: digest('Incoming c'), device: 'Mac', nonce: macNonce });
+  const museRevision = makeRevision({ path: 'c.md', parents: [base.id], blob: digest('Muse just typed c'), device: 'NAS', nonce: museNonce });
+  assert.equal(macRevision.id < museRevision.id, canonical === 'Mac');
+  f.mac.put('c.md', 'Incoming c'); await withNextNonce(t, macNonce, () => f.mac.sync());
+  f.put('c.md', 'Muse just typed c');
+  const status = await withNextNonce(t, museNonce, () => f.runner.round());
+  assert.equal(status.state, 'ok'); assert.ok(status.conflicts.includes('c.md'));
+  const local = noteVersions(f, 'c');
+  assert.equal(local.length, 2); assert.deepEqual(local.map(row => row.text).sort(), ['Incoming c', 'Muse just typed c'].sort());
+  assert.equal(f.text('c.md'), canonical === 'Mac' ? 'Incoming c' : 'Muse just typed c');
+  const remoteRows = revisions(f.dav).filter(row => row.path === 'c.md');
+  for (const expected of [macRevision, museRevision]) assert.ok(remoteRows.some(row => row.id === expected.id && row.blob === expected.blob));
+  await f.phone.sync();
+  const phoneContents = f.phone.names().filter(name => name === 'c.md' || isConflictPath(name)).map(name => f.phone.text(name));
+  assert.deepEqual(phoneContents.sort(), ['Incoming c', 'Muse just typed c'].sort());
+  checkSecret(f);
+});
+
+test('CAS race, separate from H9: an edit after capture and before download completion stays at its original path', async t => {
+  const f = await setup(t, ['c.md']);
+  const incoming = 'Mac remote version waiting for download', edited = 'Muse complete edit made after the engine scan';
+  f.mac.put('c.md', incoming); await f.mac.sync();
+  const wanted = digest(incoming), original = digest('original c.md');
+  const local = f.runner.engine.local, originalCAS = local.compareAndSet.bind(local);
+  const attempts = [];
+  t.mock.method(local, 'compareAndSet', async (name, expected, next) => {
+    const applied = await originalCAS(name, expected, next);
+    attempts.push({ name, expected, next: next === null ? null : digest(next), applied });
+    return applied;
+  });
+  let editedDuringDownload = false;
+  f.dav.intercept = ({ method, path: requested }) => {
+    if (method === 'GET' && requested.endsWith('/' + wanted + '.blob') && !editedDuringDownload) {
+      assert.equal(f.text('c.md'), 'original c.md');
+      // This GET belongs to _apply, after its local capture/observation. The
+      // fake server has not completed the response when Muse changes the file.
+      f.put('c.md', edited); editedDuringDownload = true;
+    }
+    return false;
+  };
+  const status = await f.runner.round(); f.dav.intercept = undefined;
+  assert.equal(status.state, 'ok'); assert.ok(editedDuringDownload);
+  assert.deepEqual(attempts, [{ name: 'c.md', expected: original, next: wanted, applied: false }]);
+  assert.equal(f.text('c.md'), edited); assert.equal(status.lastResult.downloaded, 0);
+  assert.ok(!revisions(f.dav).some(row => row.path === 'c.md' && row.blob === digest(edited)), 'the after-capture edit was not already published');
+  const next = await f.runner.round(); assert.equal(next.state, 'ok'); assert.ok(next.conflicts.includes('c.md'));
+  assert.deepEqual(noteVersions(f, 'c').map(row => row.text).sort(), [incoming, edited].sort());
   checkSecret(f);
 });
 
