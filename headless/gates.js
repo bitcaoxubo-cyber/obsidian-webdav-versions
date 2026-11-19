@@ -50,9 +50,20 @@ function scanVault(vaultDir) {
 function validateNames(snapshot) {
   const issues = [], used = new Map();
   const paths = [...snapshot.directories, ...snapshot.files.map(file => file.path)].sort(compare);
+  // List an NFC name as the reference when two spellings collide, even if
+  // its decomposed spelling sorts first on a byte-oriented filesystem.
   for (const name of paths) {
-    if (conflict(name)) continue;
+    if (conflict(name) || name !== name.normalize('NFC')) continue;
+    const key = folded(name);
+    if (!used.has(key)) used.set(key, name);
+  }
+  for (const name of paths) {
     const problems = [];
+    if (name !== name.normalize('NFC')) problems.push('名字不是规范合成形式，请用规范形式重新命名');
+    if (conflict(name)) {
+      if (problems.length) issues.push({ path: name, problem: problems[0] });
+      continue;
+    }
     try { safePath(name); }
     catch {
       if (name.includes('\\')) problems.push('名字含反斜杠');
