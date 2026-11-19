@@ -2,6 +2,8 @@
 
 日期：2026-11-16。基线：`bdb26b701e5be1693633145b062e30c62337f3db`（`main`，0.4.0-beta.5）。实施分支：`codex/nas-headless-sync`。
 
+本报告前半部分记录 PR #6 第一版。在 [补充任务（六）的验收结果](#补充任务六验收) 可查看相对 `9810324` 的修复、回归与剩余边界。
+
 ## 任务语义与交付范围
 
 用户已批准将 H9 修订为“外部内容不丢失，可保留于原路径或冲突副本”，并要求保持引擎和协议不变。此前暂停条件已解除；原基线的主路径排序行为没有被改动。当前任务以 [任务说明](NAS无头同步端-任务说明.md) 和 [H9 修订说明](NAS无头同步端-H9修订.md) 为准，原始 12 次模型证据继续保留。
@@ -58,17 +60,17 @@ Docker 在本机不可用，H32 为**未验证**。飞牛 UID/ACL、WebDAV 实�
 - `DiskVault` 增加第四个可选对象 `{ privateDir }`，要求显式值为绝对路径。未传参数仍走原有 `.obsidian/plugins/obsidian-webdav-versions/local-state` 创建路径；原引擎、协议、DAV、移动端、插件和调度器均未改动。
 - G2 本身不调用网络，也不修改笔记。为兑现 H26，在新一轮闸门前允许现有 `DiskVault.recover()` 完成上次已经记录的本地文件事务；这不是一次新的同步。只读既有状态/收据中的新增删除证据，用于避免崩溃前引擎已执行的删除被旧保护清单误拦。成功清单绑定相应检查点；历史 tombstone 之后仍被保留在成功清单中的文件，不因旧删除记录而永久豁免。损坏或缺失记录保守报错，不猜测修复。
 - 删除批准绑定完整清单摘要及精确消失路径集合，在引擎调用前即消费。该轮网络出错也不自动重用；扫描不稳定、坏文件名会保守作废。这比任务书“用过一次作废”更保守，用户修复后重新批准即可。
-- 原模型里的冲突副本使用引擎的精确标记 ` (sync-conflict `（含空格）。任务书“含 `(sync-conflict`”是简写；闸门按要求跳过这类名字的校验，但仅有相似字样的非标准名称仍可能被原引擎当作普通笔记上传。外部编辑约定禁止创建任何此类名称；不修改协议来扩大保留名范围。
+- 第一版模型里的冲突副本使用引擎的精确标记 ` (sync-conflict `（含空格）。任务书“含 `(sync-conflict`”是简写；第一版闸门跳过这类名字的校验，本次已加入 NFC 检查，但仅有相似字样的非标准名称仍可能被原引擎当作普通笔记上传。外部编辑约定禁止创建任何此类名称；不修改协议来扩大保留名范围。
 - 单实例锁用共享 state 目录中的 Unix socket 和原子目录移交，避免依赖不同容器中可能重复的 PID。已退休 token 保留为小型私有目录，以避免并发回收误移新锁；正常重启不需人工清锁。
 - 未新增 npm 依赖，未改 package.json、manifest.json 或 versions.json。Docker 材料不进入插件 bundle，发布 ZIP 额外包含面向用户的文档与 JSON/TXT 验收证据，不包含 headless 运行代码。
 
 ## 剩余风险
 
 1. 按用户批准的 H9 语义，外部内容可保留在冲突副本；同步后的原路径正文可能是另一设备的版本。并发版本的主路径排序仍完全沿用原协议，需由用户在插件中处理冲突。
-2. 稳定扫描仍有第二次扫描结束到引擎读取之间的空隙；一次持续很久但暂时停止的半写入也可能通过。后续完整内容通常会成为新版本，不能声称根除了半篇传播。
+2. 第一版只用成功轮末尾的磁盘清单保护删除。扫描后消失的旧文件、尚未写入清单的新下载，以及失败后重放的删除都可能漏计。本轮合并引擎绑定、完成收据和待处理操作，逐个核对发布删除的物理路径。扫描与读取之间仍可能读到外部工具暂时停止写入的半篇正文，稳定等待不能判定编辑者已写完。
 3. 外部工具读后久置、随后覆盖已经更新的笔记，仍可能被视为基于最新版本的普通编辑而无冲突副本。必须写前重读，服务端支持时使用 If-Match，并遵守约定。
 4. 大小+mtime 的移动识别是任务书指定的启发式，不能证明两个文件内容相同。真机 MOVE 是否保留这些元数据尚未验证。
-5. 崩溃恢复测试覆盖表中四个精确故障点，不能代表所有交错时序。静态复核发现一个尚未注入验证的保守边界：批量冲突副本删除若恰遇引擎状态已写入、收据已清理、保护清单尚未写入，旧清单可能触发删除暂停。这里缺少普通笔记 tombstone 的 absent 证据，不会自动扩大删除批准或丢弃内容；需核对状态后处理。
+5. 第一版会静默跳过以分解形式命名的文件。现在闸门检查文件和目录的原始拼写，并在启动引擎前列出需要改名的路径。第一版清理冲突副本后还可能在崩溃时丢掉删除来源的证据。现在保留物理路径收据至保护清单提交，已在两个检查点之间注入中断验证。
 6. Docker、飞牛身份/ACL、共享隔离、WebDAV 原子写入及 iPhone 后台行为没有由本机测试替代；未通过真机清单前不应把本报告当成生产部署验收。
 
 ## 真机确认清单
@@ -218,4 +220,78 @@ vault: 1000 notes + 10 x 1 MiB attachments = 13.774 MiB, remote layout v1
   HTTP 7 {"PROPFIND":2,"PUT":2,"HEAD":1,"GET":2} down 0.496 MiB up 0.000 MiB
 
 state file sizes (bytes): [ 295011, 295080 ]
+```
+
+## 补充任务（六）验收
+
+2026-11-18，以 `codex/nas-headless-sync` 的 `9810324` 为修复前基线。删除放行以物理路径为单位，包括冲突副本在磁盘上的实际名字。每轮只准发布在本轮稳定扫描时已经缺失、并且经过删除闸门的路径。带大小和修改时间的已知移动仍按原规则一对一抵消数量。
+
+### 测试环境与结果
+
+本机临时 Linux 虚拟机使用 aarch64 内核 6.12.115、Node v22.23.5、npm 10.9.9。测试以普通用户运行，笔记和状态位于 Linux 自己的临时文件系统，可区分 NFC 和 NFD。WebDAV 集成测试只使用回环接口，Mac 和 iPhone 分别使用独立的 `MobileVault`。附录使用自己的内存版本库。每项结果中的测试名均可在 `test/` 搜到。
+
+| 编号 | 验收结果 | 可复核的测试或命令 |
+| --- | --- | --- |
+| J1 | 817 项通过，0 失败、0 跳过。基线的 414 项插件测试与全部既有 headless 测试文件逐字节保持原样。 | `npm run check`，`git diff --exit-code --diff-filter=MD 9810324 -- test/` |
+| J2 | 引擎、协议、插件源码和生成的 bundle 与基线相同。 | `git diff --exit-code 9810324 -- src/ main.js`，构建后再次核对 `main.js` |
+| J3 | 远端删 30 篇、删到一半强杀、Mac 解决冲突后清理副本、30 篇目录移动、外部删 20 篇均正常。 | 原有 H19、H26 midway、H18、H13 和新增 `J3: NAS removes the physical conflict copy` |
+| J4 | 60 组，每组 60 步，所有执行的 NAS 同步均为 `ok`。每组结束核对三端所有可见文件名和正文。 | `J4: 60 seeded three-device histories`，种子从 `0xc4a60000` 到 `0xc4a6003b`。每组随机交错三方新建、改写、删除、移动，另外制造 4 次真实并发冲突并在 Mac 选择版本，4 次重启 NAS |
+| J5 | 上传时清空，下一轮列出 60 篇。 | `J5 D1`，上传修改的是原有笔记 |
+| J6 | 下载时清空，暂停并列出原有 60 篇。 | `J6 D2`，在远端正文 GET 中清空 |
+| J7 | 上传途中从 60 篇中删 45 篇，暂停并列出这 45 篇。 | `J7 D3` |
+| J8 | 闸门放行后、引擎列目录前清空，当轮 `paused`，下一轮持久化全部 60 个路径。 | `J8 D4`，首次 PROPFIND 注入 |
+| J9 | 首次下载 50 篇后分别注入网络 503 和真实子进程 `SIGKILL`。重启首轮均暂停并列出 50 篇。 | `J9 D5 network`、`J9 D5 SIGKILL` |
+| J10 | 30 篇新笔记在当轮下载后消失，全部计入下一轮。 | `J10 D6`，在取得最后一篇独立正文时删除前 30 篇 |
+| J11 | 上述 7 种故障各自放回原稿，NAS 自动恢复，两台模拟设备的路径和内容都与预期一致。 | 每个 D 用例的 `J11 restore` 分支。暂停前后均检查远端新增删除版本为 0 |
+| J12 | 每个场景均拒绝错误数量。正确批准后只发布对应物理文件的删除，再同步一次也没有重复。 | 每个 D 用例的 `J12 approve` 分支。核对服务器的全部删除版本和两台设备的正文 |
+| J13 | 上传途中删 15 篇，当轮 `ok` 且发布 0 个删除，下一轮闸门计数 15 后发布，随后不再重复。 | `J13: 15 mid-upload deletions` |
+| J14 | 200 次固定种子请求注入。逐轮检查新增删除数量和路径，超限或全空均停在 `paused`，小额部分删除各发布一次。 | `J14: 200 seeded mid-request deletions`，基种子 `0xb6172026`，每例显示派生种子和所选请求下标。2 或 6 篇起步，上限 2，覆盖上传、下载及混合轮和每次注入后的三轮 |
+| J15 | 原样附录 D1–D6 到达 Mac 的删除均为 0，N1 暂停并指出原名。 | 下方两份 `gate-holes.js` 输出。修复前连续三次逐字节相同 |
+| J16 | 分解形式的文件、文件夹、含冲突标记的名字、真实已绑定的冲突副本均暂停。保留原字节和原名，改为 NFC 后同步。 | `J16: decomposed` 三项与 `J16: a bound conflict copy` |
+| J17 | NFC 中文、预组合日文浊音假名和重音拉丁字母正常同步。 | `J17: NFC Chinese, Japanese kana and accented Latin names` |
+| J18 | 用户名为 `notes` 时，私有状态、镜像、CLI 和日志均完整显示 `notes/plan.md`。分别检查冲突、待批准删除和文件名诊断。 | `J18: conflict and pending deletion paths`、`J18: a name-check reason`，Linux 使用真实大小写路径碰撞 |
+| J19 | 密码原文、URL 组件和表单编码、Basic 认证串均未出现在检查的输出中。异常中的 WebDAV 地址与状态目录从镜像中移除。 | 三项 `J19` 覆盖含凭据的 HTTP 503 正文、直接抛出的异常、CLI 标准错误、文件名本身含密码，以及用户名 `u` 出现在 `simulated crash` 中 |
+| J20 | 两份使用文档已补上检查后消失、NFC 文件名和恢复方法。 | [NAS 暂停原因与处理办法](NAS无头同步端.md)、[外部编辑约定](外部编辑约定.md) |
+| J21 | 已更正第一版剩余风险，并记录复现、修复边界和本次验收。 | 本报告“剩余风险”及本节 |
+
+### 恢复规则与七个实现边界
+
+1. **路径形式。** 文件名闸门用磁盘原名给出改名提示。在计算缺失、重放绑定、匹配移动和发出删除时使用 NFC 物理键。文件名检查也覆盖每个可见目录和带冲突标记的路径。
+2. **冲突副本。** 闸门按副本实际文件名计数，发布时保留既有协议的逻辑路径。外部删除副本会计数；Mac 解决冲突后由引擎执行的删除凭物理路径收据豁免。即便引擎已把收据并入主状态，也等保护清单持久化后才清理收据。`I1: external removal of a conflict copy` 和 `conflict cleanup survives a restart between engine checkpoint and protection checkpoint` 分别验证两种来源。
+3. **未完成操作。** 已完成的操作按顺序重放收据。待完成的内容上传也进入本轮预期集合。对中断的本地删除，以事务内已移走的旧文件和操作 ID 证明引擎实际执行过删除。未完成下载保留原有恢复语义。对于待发布删除，在本轮闸门放行后核对远端不可变版本 ID 和历史。服务端已收到时只补本地完成记录；未收到且文件已放回时撤销旧意图、保留原绑定；仍缺失并获本轮放行时重试同一 ID。远端读取失败则保留日志。六个 `pending deletion: received=…` 用例（未放回、放回原稿、放回另有编辑的正文）、`an inconclusive remote listing` 和 `missing pending content upload` 分别核对远端、恢复记录和两台设备。旧版中断现场缺少执行证明时，可能需要核对一次待批准列表。
+4. **同一路径先删后建、先建后删。** 成功的本地删除结束该路径的存在记录，成功写入随即重新保护该路径。旧删除的豁免不会沿用到新内容。一轮内读到本来存在的文件变成缺失，就中止；任何新删除写入待处理日志前，还要消费本轮对该物理路径的一次授权。`a successful CAS updates the same path` 逐次验证这一行为。
+5. **轮内中止。** 发现晚于检查的消失时返回 `paused`，沿用正常间隔。已写入磁盘的事务和收据在下一轮恢复；仍缺失的路径重新计数。在新下载落盘前后检查原有文件是否仍在，以免下载掩盖整库清空。可能出现这一交错时，先写入待处理操作标记，即使落盘后立即被杀，重启仍可提示核对。`last witness disappears inside the download hard link` 验证硬链接前后的中断和元数据碰撞。
+6. **放回文件。** 统计依据是当前扫描与保护清单、绑定及待处理操作的并集。放回原名即可消除对应缺失。D5 的 50 篇尚未进入成功轮清单，两个 `J9 / J11 restore` 场景仍可自动恢复。
+7. **成功轮清单。** 继续在引擎成功后扫描，因为磁盘大小和修改时间供下一轮识别移动，清单摘要和检查点还用于绑定一次性批准、限定删除豁免和安全清理收据。单靠这份清单不能代表所有应当存在的文件。只从绑定补进的路径没有元数据，不能抵消移动。正在由引擎新建的下载目标也不能抵消一个恰好同大小、同修改时间的外部删除。
+
+附录原型只保护扫描后读到缺失的路径。基线实验还发现，重启重放旧删除时不会再次读本地文件，而重放内容上传能在闸门之后创建新绑定。按本轮确认的恢复规则，NAS 包装层同时检查待处理操作、删除日志的写入与已经提交的远端版本。状态保留原字段 `pendingDeletions.paths` 的 20 条摘要，超过 20 条时增加 `allPaths` 给出完整清单。异常信息含认证秘密时整段隐藏；其他异常只遮配置的地址和状态目录。既有 H29 人工异常把用户名和整套认证信息放在同一条消息里，正式 DAV 错误按 HTTP 状态报告，不转发响应正文。
+
+**仍需留意的时序。** 最后一篇旧文件在新下载硬链接落盘的紧前或紧后被外部删除，两种顺序可留下同样的现场。如果没有观察到新旧文件同时存在，NAS 会保守暂停，列出消失的旧文件。外部写入方在两次观察之间自行清空又填入其他文件，NAS 无法重建瞬间的目录历史；仍要按本轮缺失路径计数后才能发布删除。服务端已开始执行的旧 HTTP 请求也无法由客户端撤回。恢复判断依赖远端能完整、一致地列出已提交版本，集成测试覆盖的是服务端拒收和已提交但响应丢失。大小与修改时间相同仍只能推断移动。Docker 镜像构建（H32）、飞牛实际 WebDAV 和生产笔记库继续留待真机验收。
+
+### 原样附录输出
+
+在虚拟机的空目录运行 `node gate-holes.js <仓库快照路径>`。D1 附录中途还上传了新笔记 `inbox/one.md`；它与原有 60 篇都被清掉，因此修复后的待确认数量是 61。J5 的集成用例改写原有笔记，待确认数量是 60。
+
+**修复前，9810324**
+
+```text
+D1 folder wiped while a round is uploading                       | NAS: ok -> ok | deletions that reached Mac: 60 (Mac had 60)
+D2 folder wiped while a round is downloading                     | NAS: ok -> ok | deletions that reached Mac: 60 (Mac had 60)
+D3 45 of 60 notes deleted while a round is uploading             | NAS: ok -> ok | deletions that reached Mac: 45 (Mac had 60)
+D4 folder wiped after the gate scan, before the engine lists it  | NAS: ok -> ok | deletions that reached Mac: 60 (Mac had 60)
+D5 first round fails after 50 downloads; folder wiped; restart   | NAS: error [同步出错：simulated network failure] -> ok | deletions that reached Mac: 50 (Mac had 60)
+D6 30 notes downloaded and deleted again within the same round   | NAS: ok -> ok | deletions that reached Mac: 30 (Mac had 5)
+N1 file with a decomposed (NFD) name                             | NAS: ok | reached Mac: false
+```
+
+**修复后**
+
+```text
+D1 folder wiped while a round is uploading                       | NAS: ok -> paused [笔记文件夹已全空：共 61 个；请恢复文件，或在 NAS 上批准这组删除] pending 61 | deletions that reached Mac: 0 (Mac had 60)
+D2 folder wiped while a round is downloading                     | NAS: paused [检查之后又有文件消失，本轮已中止；下一轮将重新检查。] -> paused [笔记文件夹已全空：共 60 个；请恢复文件，或在 NAS 上批准这组删除] pending 60 | deletions that reached Mac: 0 (Mac had 60)
+D3 45 of 60 notes deleted while a round is uploading             | NAS: ok -> paused [消失的文件超过删除上限：共 45 个；请恢复文件，或在 NAS 上批准这组删除] pending 45 | deletions that reached Mac: 0 (Mac had 60)
+D4 folder wiped after the gate scan, before the engine lists it  | NAS: paused [检查之后又有文件消失，本轮已中止；下一轮将重新检查。] -> paused [笔记文件夹已全空：共 60 个；请恢复文件，或在 NAS 上批准这组删除] pending 60 | deletions that reached Mac: 0 (Mac had 60)
+D5 first round fails after 50 downloads; folder wiped; restart   | NAS: error [同步出错：simulated network failure] -> paused [笔记文件夹已全空：共 50 个；请恢复文件，或在 NAS 上批准这组删除] pending 50 | deletions that reached Mac: 0 (Mac had 60)
+D6 30 notes downloaded and deleted again within the same round   | NAS: ok -> paused [消失的文件超过删除上限：共 30 个；请恢复文件，或在 NAS 上批准这组删除] pending 30 | deletions that reached Mac: 0 (Mac had 5)
+N1 file with a decomposed (NFD) name                             | NAS: paused [文件名需要修改：café.md（名字不是规范合成形式，请用规范形式重新命名）] | reached Mac: false
 ```
