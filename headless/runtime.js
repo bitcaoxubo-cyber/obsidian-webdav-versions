@@ -6,7 +6,7 @@ const { DiskVault, DiskState } = require('../src/local');
 const { AdaptiveDavRemote } = require('../src/sharded');
 const { SyncEngine } = require('../src/engine');
 const { Gates } = require('./gates');
-const { atomicJson, readJson, safeDirectory, publicText, publicValue, probeMount } = require('./io');
+const { atomicJson, readJson, safeDirectory, publicText, publicError, publicValue, probeMount } = require('./io');
 const { acquireLock } = require('./lock');
 const baseStatus = () => ({ state: 'paused', reason: '尚未完成首次同步。', lastSuccess: null, lastResult: null, conflicts: [], needsAttention: {}, pendingDeletions: null });
 function requireInstance(config) {
@@ -62,12 +62,20 @@ class Runner {
     // A missing/unreadable/moved vault must remain untouched. Never recreate it.
     try { safeDirectory(this.config.vaultDir); atomicJson(path.join(this.config.vaultDir, '.sync-status.json'), status, true); }
     catch (e) { if (status.state === 'ok') throw new Error('无法写入 vault/.sync-status.json，请检查挂载和权限。'); }
-    const key = status.state + ':' + status.reason;
-    if (status.state !== 'ok') { if (key !== this.previousLog) this.log(status.reason); }
+    const pending = status.pendingDeletions;
+    const key = JSON.stringify([status.state, status.reason, pending, status.conflicts]);
+    if (status.state !== 'ok') {
+      if (key !== this.previousLog) {
+        this.log(status.reason);
+        if (pending) this.log('待批准删除：' + (pending.allPaths || pending.paths).join('、'));
+      }
+    }
     else {
-      if (this.previousLog && !this.previousLog.startsWith('ok:')) this.log('同步已恢复。');
+      if (this.previousLog && this.status.state !== 'ok') this.log('同步已恢复。');
       const r = status.lastResult;
-      if (r && (r.uploaded || r.downloaded || r.deleted)) this.log(`同步完成：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}；冲突 ${status.conflicts.length}。`);
+      const transferred = r && (r.uploaded || r.downloaded || r.deleted);
+      if (transferred) this.log(`同步完成：上传 ${r.uploaded}，下载 ${r.downloaded}，删除 ${r.deleted}；冲突 ${status.conflicts.length}。`);
+      if (status.conflicts.length && key !== this.previousLog && (transferred || this.previousLog)) this.log('冲突：' + status.conflicts.join('、'));
     }
     this.previousLog = key; this.status = status; return status;
   }
@@ -112,7 +120,7 @@ class Runner {
       const needsAttention = Object.fromEntries(Object.entries(result.confirmations || {}).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]));
       return await this.persist({ state: 'ok', reason: Object.values(needsAttention).some(Boolean) ? '有待确认项目，请在 Mac 或手机的插件里处理。' : '', lastSuccess: new Date(this.now()).toISOString(), lastResult: { uploaded: result.uploaded || 0, downloaded: result.downloaded || 0, deleted: result.deleted || 0 }, conflicts: result.conflictPaths || [], needsAttention, pendingDeletions: null });
     } catch (error) {
-      return this.persist({ ...this.status, state: 'error', reason: '同步出错：' + publicText(error.message, this.config), pendingDeletions: null });
+      return this.persist({ ...this.status, state: 'error', reason: '同步出错：' + publicError(error.message, this.config), pendingDeletions: null });
     }
   }
   async close() { this.stop(); await this.release(); }

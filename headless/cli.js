@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const { loadConfig } = require('./config');
-const { publicText } = require('./io');
+const { publicError } = require('./io');
 const { init, run, readStatus, checkHealth, approve } = require('./runtime');
 function parseArgs(argv, env = process.env) {
   let file = env.HEADLESS_CONFIG, command, once = false, check = false, count;
@@ -32,9 +32,12 @@ async function main(argv = process.argv.slice(2), { env = process.env, stdout = 
     if (status.lastResult) stdout('上一轮：上传 ' + status.lastResult.uploaded + '，下载 ' + status.lastResult.downloaded + '，删除 ' + status.lastResult.deleted);
     if (status.conflicts?.length) stdout('冲突：' + status.conflicts.join('、') + '；请在 Mac 或手机的插件里处理。');
     if (Object.values(status.needsAttention || {}).some(Boolean)) stdout('待确认：' + JSON.stringify(status.needsAttention) + '；请在 Mac 或手机的插件里处理。');
-    if (status.pendingDeletions) stdout('待批准删除：' + status.pendingDeletions.count + '；' + status.pendingDeletions.paths.join('、'));
+    if (status.pendingDeletions) {
+      const { count, paths, allPaths } = status.pendingDeletions;
+      stdout('待批准删除：' + count + '；' + (allPaths || paths).join('、'));
+    }
     return 0;
-  } catch (error) { if (!quiet) stderr(publicText(error.message, config || { password: env.HEADLESS_PASSWORD })); return 1; }
+  } catch (error) { if (!quiet) stderr(publicError(error.message, config || { password: env.HEADLESS_PASSWORD })); return 1; }
 }
 if (require.main === module) main().then(code => { process.exitCode = code; }, () => { process.stderr.write('同步端发生未处理错误。\n'); process.exitCode = 1; });
 module.exports = { main, parseArgs };

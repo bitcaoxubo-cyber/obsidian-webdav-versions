@@ -38,7 +38,7 @@ function loadConfig(file, { env = process.env } = {}) {
   return config;
   } catch (error) {
     let message = error.message;
-    for (const password of [raw.password, env.HEADLESS_PASSWORD, filePassword].filter(value => typeof value === 'string' && value)) message = publicText(message, { password });
+    for (const password of [raw.password, env.HEADLESS_PASSWORD, filePassword].filter(value => typeof value === 'string' && value)) message = publicText(message, { username: raw.username, password });
     throw new Error(message);
   }
 }
