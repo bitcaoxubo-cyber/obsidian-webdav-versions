@@ -1,129 +1,143 @@
-# NAS 无头同步端
+# 在飞牛或 Linux NAS 上部署无头同步端
 
-无头端在 NAS 上作为一台名为 `NAS` 的独立设备运行，使用插件现有的同步引擎。Muse 通过飞牛 WebDAV 读写普通文件，Mac 和 iPhone 仍使用原插件。此功能不发布新的插件版本，也不提供公开 Docker 镜像；请从评审通过的代码自行构建。
+NAS 会以独立设备的身份，与 Mac、iPhone 的 Obsidian 插件共用原有 HTTPS WebDAV 版本目录。它把当前笔记写成 Markdown 和附件，供 Muse 等工具经飞牛 WebDAV 读写。容器主动连接版本库，无需映射网络端口。
 
-```text
-Muse ── 专用 WebDAV 账号 ── 数据目录/vault/（普通笔记）
-                                  │
-                             NAS 无头同步端
-                                  │
-                         数据目录/state/（私有状态）
-                                  │
-                       原有 HTTPS WebDAV 版本目录
-                                  │
-                           Mac / iPhone 插件
+| 位置 | 用途 | 谁可以访问 |
+| --- | --- | --- |
+| 宿主机数据目录下的 `vault/` | 可编辑的当前笔记 | Muse 专用 WebDAV 账号和同步容器 |
+| 同一数据目录下的 `state/` | 实例身份、同步记录、恢复日志和删除批准 | 同步容器和 NAS 管理员 |
+| 插件配置的 HTTPS WebDAV 目录 | 版本历史，含插件管理的 v1 或 v2 子目录 | 配置中填写的版本库同步账号 |
+
+## 1. 下载并导入镜像
+
+在飞牛上启用 Docker，通过 SSH 登录 NAS。普通 Linux 用户在 NAS 本机终端操作。以下使用 Bash、Docker Compose v2、`curl` 和 `sha256sum`。先备份已同步的笔记，选择能持久保存部署文件和数据的目录，再逐段执行。[0.4.0-beta.6 发布页](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/releases/tag/0.4.0-beta.6)
+
+```bash
+docker info --format '{{.ServerVersion}}'
+docker compose version
+cd "/替换成你的NAS持久化目录" && mkdir -m 700 obsidian-sync && cd obsidian-sync
 ```
 
-`vault/` 才是给 Muse 的目录。`state/` 保存本机同步记录、恢复日志、锁和删除批准，不能共享给 Muse。`obsidian-webdav-versions-v1/` 或 `obsidian-webdav-versions-v2/` 是原有版本存储，不能作为普通笔记文件夹让 Muse 操作。
+在新建的 `obsidian-sync` 目录下载本机架构对应的镜像。Intel 或 AMD 的 `x86_64` 选用 `amd64`，64 位 ARM 选用 `arm64`。校验镜像、Compose 和配置示例后，再将镜像导入本机 Docker。
 
-## 1. 准备数据目录和 Muse 账号
-
-1. 在飞牛上选择一个持久化数据目录，在其下建立 `vault/` 与 `state/` 两个子目录。首次接入时 `vault/` 应为空，`state/` 也不应含同步记录。不要复制其他设备的同步记录。
-2. 创建专门给 Muse 使用的 WebDAV 账号，只允许它读写 `vault/`。不要给它数据目录的上级共享权限；检查其他共享、已有组权限和访问路径，确认它访问不到 `state/`、原有版本目录。
-3. 容器只挂载整个数据目录一次。不要把 `vault/` 和 `state/` 分别挂进容器，即使它们在宿主机上属于同一块磁盘。启动会实际测试两目录间的硬链接及重命名；不支持时拒绝启动，并清理探测文件。
-4. 初次部署和升级前保留现有笔记备份。同步不是独立备份，确认后的删除会传播到其他设备。
-
-### 查清 WebDAV 实际使用的系统用户
-
-引擎新建文件采用 `0600`，新建目录采用 `0700`。容器必须以飞牛 WebDAV 实际读写这些文件的同一系统用户运行。WebDAV 登录名不一定等于实际文件所有者，不能仅凭账号名称填写 UID。
-
-在 `init` 之前，用 Muse 专用账号通过 WebDAV 新建一个测试文件和一个含测试文件的子目录。在 NAS 的终端查看它们的所有者数字；下面路径全部替换为实际路径：
-
-```sh
-stat -c '%u:%g %a %n' /实际数据目录/vault/权限探测.md
-stat -c '%u:%g %a %n' /实际数据目录/vault/权限探测目录
+```bash
+(
+  set -eu
+  version=0.4.0-beta.6
+  case "$(uname -m)" in
+    x86_64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) echo "该架构没有预构建镜像：$(uname -m)" >&2; exit 1 ;;
+  esac
+  asset="obsidian-webdav-headless-${version}-linux-${arch}.tar.gz"
+  url="https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/releases/download/$version"
+  for file in SHA256SUMS compose.yaml config.example.json "$asset"; do
+    curl -fL --retry 3 -o "$file" "$url/$file"
+  done
+  for file in compose.yaml config.example.json "$asset"; do
+    awk -v f="$file" '$2 == f { print }' SHA256SUMS | sha256sum -c -
+  done
+  docker image load -i "$asset"
+  docker image inspect --format '{{.Os}}/{{.Architecture}}' "obsidian-webdav-headless:$version"
+)
 ```
 
-记录 UID、GID；再用飞牛用户管理或 `id 用户名` 对照。配置文件中的同步账号使用原有版本目录的账号；容器的系统 UID/GID 则按上述明文文件实际所有者设置，这是两种不同用途。
+三项校验均应显示 `OK`，最后一行应为 `linux/amd64` 或 `linux/arm64`。NAS 无法访问 GitHub 时，可在另一台电脑从发布页下载这四个文件，按 **NAS** 架构选择镜像，再传入部署目录，跳过上述下载循环并在 NAS 上校验、导入。Compose 使用已导入的版本标签。[Docker 镜像导入说明](https://docs.docker.com/reference/cli/docker/image/load/)
 
-由 NAS 管理员确保数据目录、空的 `vault/` 和 `state/`、配置文件及密码文件可被这个 UID 访问，父目录也有进入权限。状态目录不授予 Muse 的 WebDAV 访问权限。先通过 WebDAV 删除权限探测文件和目录，再运行 `init`。
+## 2. 准备数据目录和 WebDAV 账号
 
-首次同步后还必须双向验证：Muse 能读、改、删容器下载的测试笔记；容器能读、改、删 Muse 新建的测试笔记及子目录。若文件创建者实际是 `root`，或飞牛 ACL、身份映射导致同一个非 root UID 仍无法双向操作，停止部署并保留结果供评审。不要通过改引擎权限、让容器以 root 运行或放宽整个共享目录权限绕过。
+同步端以实际写文件的数字 UID/GID 运行。先用 Muse 账号在采用相同身份映射的飞牛 WebDAV 共享中新建一个临时文件，在 NAS 终端填写它对应的本地路径。第一个数字应为普通用户的 UID。若看到 `0`，请先调整 WebDAV 的身份映射，再重新取值。随后可通过 WebDAV 移走该临时文件。
 
-## 2. 取得代码并构建
-
-NAS 需要 Docker 和 Docker Compose。下载评审通过的提交；在 PR 尚未合并时，只在独立测试环境试用对应分支，勿把未验收代码接入正式库。
-
-```sh
-git clone https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions.git
-cd obsidian-webdav-versions
-git checkout <评审通过的提交编号>
-docker build -f headless/Dockerfile -t obsidian-webdav-headless:local .
+```bash
+probe="/替换成探测文件的本地绝对路径"
+stat -c '%u:%g %a %n' "$probe"
+sync_uid=$(stat -c %u "$probe")
+sync_gid=$(stat -c %g "$probe")
 ```
 
-构建上下文必须是仓库根目录。镜像基于 `node:22-alpine`，只复制 `src/` 和 `headless/`，不运行 `npm install`。
+在部署目录旁新建 `obsidian-sync-data/`。下列命令使用管理员的 `sudo` 建目录和设置所有者，容器使用上一步的普通用户身份。如果已有同名数据目录，请先核对其中的笔记和状态；已部署的实例按第 6 节升级。
 
-若拉取基础镜像失败，先检查 NAS 的 DNS、网络及 Docker 配置，重试 `docker pull node:22-alpine`。也可在可信、能联网且与 NAS 架构兼容的机器上拉取基础镜像，使用 `docker save` 导出，传到 NAS 后用 `docker load` 导入，再本地构建。不要从不明站点获取替代镜像，也不需要向镜像仓库推送本项目。
+```bash
+(
+  set -eu
+  test "$sync_uid" -gt 0
+  sudo mkdir -m 700 ../obsidian-sync-data
+  sudo install -d -m 700 -o "$sync_uid" -g "$sync_gid" ../obsidian-sync-data/{vault,state}
+  sudo chown "$sync_uid:$sync_gid" ../obsidian-sync-data
+)
+```
 
-## 3. 写配置与部署变量
+在飞牛中把 `obsidian-sync-data/vault/` 单独授权给 Muse 的 WebDAV 账号。检查该账号和所属组可读写这个子目录，访问不到上级共享、`state/`、部署目录及版本存储。容器将整个 `obsidian-sync-data/` 挂载一次到 `/data`，以便在两个子目录之间创建硬链接和重命名。首次接入使用空的 `vault/` 和 `state/`，原有笔记会从版本库下载。
 
-把 `headless/config.example.json` 复制到数据目录之外、Muse 无法访问的位置，例如专用部署配置目录。修改以下字段：
+## 3. 写入配置和密码
 
-| 字段 | 用途 |
+将示例复制为工作配置，用编辑器填写 `url` 和 `username`。
+
+```bash
+umask 077
+cp config.example.json config.json
+vi config.json
+```
+
+| 字段 | 填写方法 |
 | --- | --- |
-| `url` | 原有插件使用的完整 HTTPS WebDAV 文件夹地址；不要填写 Muse 明文文件夹的地址，也不要手动追加版本目录名。 |
-| `username` | 原有版本目录的同步账号。 |
-| `passwordFile` | 容器内密码文件路径，示例为 `/run/secrets/webdav-password`。 |
-| `dataDir` | 容器内的单一数据挂载点，示例为 `/data`。 |
-| `device` | 设备名，默认 `NAS`。 |
-| `intervalSeconds` | 两轮间隔，默认 30 秒。 |
-| `settleSeconds` | 两次稳定扫描的间隔，默认 5 秒。 |
-| `deletionLimit` | 消失文件数超过此数才触发数量闸门，默认 20；全空规则单独生效。 |
-| `allowInsecureLoopback` | 默认 `false`。仅本机假服务测试时允许 `127.0.0.1` 或 `[::1]` 的 HTTP，不可用于 NAS 地址。 |
+| `url` | 原样填写 Mac 或 iPhone 插件中的 HTTPS WebDAV 文件夹地址。插件会自行选择版本子目录。 |
+| `username` | 填写同一插件使用的版本库存取账号。 |
+| `passwordFile` | 保留 `/run/secrets/webdav-password`，容器会从此处读取密码。 |
+| `device`、`dataDir` | 示例使用设备名 `NAS` 和数据挂载点 `/data`。 |
+| `intervalSeconds`、`settleSeconds` | 默认每轮结束后等 30 秒再开始下一轮，两次稳定扫描相隔 5 秒。 |
+| `deletionLimit`、`allowInsecureLoopback` | 保留默认值 `20` 和 `false`。 |
 
-JSON 不允许注释、未知字段或错误类型。密码按 `HEADLESS_PASSWORD` 环境变量、`passwordFile`、JSON 的 `password` 字段依次选择；推荐示例中的独立文件，不把密码放入 shell 命令、Compose 文件或版本库。密码文件只存密码，保存在 Muse 无法访问的位置，限制为相应用户可读。相对 `passwordFile` 按配置文件所在目录解析。
+在密码提示中输入版本库账号密码，屏幕不回显，密码不会进入命令历史。文件只授予同步 UID 读写。`.env` 中的绑定源按本部署目录定位，配置和密码以只读方式挂入容器。
 
-配置路径可用 `--config 文件路径` 或 `HEADLESS_CONFIG` 指定。示例容器已设置 `HEADLESS_CONFIG=/config/config.json`。
-
-自签证书使用 Node 的 `NODE_EXTRA_CA_CERTS`：将可信 CA PEM 文件只读挂入容器，在 Compose 的 `environment` 里设置其容器内路径，再重新创建容器。不要关闭证书校验。URL 不允许嵌入密码、查询参数或片段。
-
-在仓库外建立 `nas-sync.env`。以下值均需替换；UID/GID 必须是上一节查出的非 root 数字：
-
-```dotenv
-NAS_SYNC_UID=1000
-NAS_SYNC_GID=1000
-NAS_SYNC_DATA=/实际数据目录
-NAS_SYNC_CONFIG=/实际配置目录/config.json
-NAS_SYNC_PASSWORD_FILE=/实际配置目录/webdav-password
+```bash
+(
+  set -eu
+  umask 077
+  test "$sync_uid" -gt 0
+  IFS= read -r -s -p '版本库 WebDAV 密码：' dav_password </dev/tty
+  echo
+  test -n "$dav_password"
+  printf '%s\n' "$dav_password" > webdav-password
+  unset dav_password
+  chmod 600 config.json webdav-password
+  sudo chown "$sync_uid:$sync_gid" config.json webdav-password
+  cat > .env <<EOF
+NAS_SYNC_UID=$sync_uid
+NAS_SYNC_GID=$sync_gid
+NAS_SYNC_DATA=../obsidian-sync-data
+NAS_SYNC_CONFIG=./config.json
+NAS_SYNC_PASSWORD_FILE=./webdav-password
+EOF
+  docker compose config --quiet
+)
 ```
 
-此文件不存密码。数据目录、配置文件和密码文件都要提前建好；示例 Compose 不自动建立缺失的挂载源。仅数据目录可写，配置与密码挂载均只读。
+以后重新登录 NAS，先进入这个部署目录，再运行文中的 `docker compose` 命令。若数据目录选在其他存储卷，把 `.env` 中的 `NAS_SYNC_DATA` 改成该目录的绝对路径。使用私有 CA 时，将 CA 的 PEM 文件只读挂入容器，给 Compose 的 `environment` 加入 `NODE_EXTRA_CA_CERTS` 指向其容器内路径，再创建容器。
 
-在仓库根目录定义命令简写，后续命令都在同一个终端执行：
+## 4. 初始化、首次下载与验收
 
-```sh
-export NAS_SYNC_ENV=/实际配置目录/nas-sync.env
-dc() { docker compose --env-file "$NAS_SYNC_ENV" -f headless/docker-compose.example.yml "$@"; }
-dc config --quiet
-dc build
+首次安装运行一次 `init`，检查挂载、权限与文件系统，然后开始首轮同步。
+
+```bash
+docker compose run --rm sync init && docker compose run --rm sync run --once
+docker compose run --rm sync status
 ```
 
-## 4. 初始化和第一次同步
+`init` 会在 `state/` 创建实例身份。`run --once` 成功退出码为 0，暂停为 2，出错为 1。遇到暂停或错误，按第 5 节处理后再执行 `run --once`。确认状态为“正常”、上次成功时间已更新，并在 `vault/` 看见预期笔记后再启动常驻服务。
 
-```sh
-dc run --rm sync init
-dc run --rm sync run --once
-dc run --rm sync status
-dc up -d sync
+```bash
+docker compose up -d sync
+docker compose ps
+docker compose exec sync node headless/cli.js status
+docker compose logs --tail 100 sync
 ```
 
-`init` 只初始化空的本机实例，写入带随机编号和创建时间的 `state/instance.json`。已有笔记、已有同步记录或重复初始化都会拒绝。检查挂载路径并备份现有内容，不要为让命令通过而直接删除笔记。`run` 不会替你初始化一个意外挂错的新目录。
+用 Muse 新建一篇测试笔记，等 `vault/.sync-status.json` 的 `lastSuccess` 晚于写入时间，再在 Mac 或 iPhone 前台同步，核对同名笔记与正文。从 Mac 修改它，再用 Muse 检查下载和写入权限。正常后再批量编辑笔记。
 
-`run --once` 包含全部闸门，成功退出码为 0，暂停为 2，错误为 1。第一次下载可能较慢；确认状态为 `ok`、`lastSuccess` 已有时间，且 `vault/` 中出现预期的普通笔记，再交给 Muse。首次下载前不要往空库导入旧副本。
-
-常驻启动后查看：
-
-```sh
-dc exec sync node headless/cli.js status
-dc logs --tail 100 sync
-dc ps
-```
-
-`status --check` 不打印详情，只以退出码表示健康：必须为 `ok`、且距上次成功不超过 10 分钟。`paused`、`error`、尚未成功或状态过期都会不健康；首次大批下载超过健康检查宽限时间也可能暂时显示不健康，检查日志判断进展。健康检查不自动修复或重建同步记录。
-
-`state/status.json` 是私有状态；`vault/.sync-status.json` 是供 Muse 读取的状态镜像，内容不变时不重写，也不会上传到版本目录。主要字段：`state`、中文 `reason`、`lastSuccess`、本轮计数 `lastResult`、`conflicts`、`needsAttention`、`pendingDeletions`。镜像显示笔记路径的原名，例如账号为 `notes` 时仍显示 `notes/plan.md`。异常信息会隐藏配置的 WebDAV 地址和私有状态路径，含认证凭据的异常会显示通用提示。`ok` 表示 NAS 这一轮完成，不保证另一台设备已联网接收。
-
-日志写标准输出，每行带时间；有变化、暂停、恢复、出错时记录，空闲轮不刷屏。不记录笔记内容或密码。网络及引擎错误按 30、60、120、240、300 秒重试（以配置的初始间隔为准，上限 5 分钟），成功后恢复正常间隔。
+- `state/status.json` 保存私有状态，`vault/.sync-status.json` 是给 Muse 读取的镜像。两者显示中文原因、时间、传输计数、冲突及待批准删除的路径。NAS 的 `ok` 表示本轮已完成，其他设备各自轮询接收。
+- `docker compose exec sync node headless/cli.js status --check` 静默返回退出码。状态为 `ok` 且距上次成功不超过 10 分钟时返回 0。健康检查和普通 `status` 详情可分别用于监控和诊断。
+- 日志记录有变化的传输、暂停、错误和恢复，空闲轮不刷屏。按默认设置，网络或引擎错误会在 30、60、120、240、300 秒后重试，成功后恢复正常间隔。
 
 ## 5. 暂停、错误与确认
 
@@ -150,10 +164,10 @@ dc ps
 从 NAS 终端对正在运行的实例批准，`N` 必须换成当前实际消失数量：
 
 ```sh
-dc exec sync node headless/cli.js approve-deletions --count N
+docker compose exec sync node headless/cli.js approve-deletions --count N
 ```
 
-下一轮会重新检查并应用有效批准。若容器已经停止，也可用 `dc run --rm sync approve-deletions --count N`，随后 `dc up -d sync`。
+下一轮会重新检查并应用有效批准。若容器已经停止，也可用 `docker compose run --rm sync approve-deletions --count N`，随后 `docker compose up -d sync`。
 
 数量不符会拒绝。批准只绑定当时那组路径，只能使用一次；批准后多删一个、少删一个或换成另一组路径都会作废。批准在调用引擎前消耗，即使随后遇到网络或引擎错误也不会保留到重试，需重新核对并批准。检查时发现文件仍不稳定、文件名错误、目录缺失或不可读，也会保守作废已有批准，先解决原因再批准。
 
@@ -163,16 +177,37 @@ dc exec sync node headless/cli.js approve-deletions --count N
 
 ## 6. 升级
 
-1. 暂停 Muse 的写入，检查本轮状态和未处理项目。
-2. `dc stop sync`，备份整个数据目录和部署配置；保留 `vault/` 与 `state/` 的配套关系。
-3. 获取评审通过的新提交，核对升级说明，`dc build`。
-4. `dc run --rm sync run --once`；成功后 `dc up -d sync`，再开放 Muse 写入。
+1. 暂停 Muse 写入，在原部署目录运行 `docker compose exec sync node headless/cli.js status`，核对未处理项目。
+2. 运行 `docker compose stop sync`，备份整个数据目录（包括配套的 `vault/` 和 `state/`）、`.env`、配置、密码和当前的 `compose.yaml`。
+3. 在新的临时目录按第 1 节下载目标版本的附件，将命令里的 `version` 换成该 Release 的标签。校验并导入镜像后，用校验过的新版 `compose.yaml` 替换原部署目录中的同名文件。保留原部署目录、`.env`、`config.json` 和密码文件，对照新版本配置示例补充必要设置。若上一版从源码目录或其他 Compose 工程运行，请先在那里停止原实例。
+4. 返回原部署目录，执行下列命令。升级沿用已有的实例身份，只在首次安装时执行 `init`。
 
-升级不再运行 `init`，不复制别台设备的状态。停止时不开始新一轮，正在进行的轮次最多等待 8 秒，Docker 示例给 10 秒宽限；若被中断，下次启动由引擎恢复日志继续处理。需要回退时先核对版本的状态兼容性，不用旧代码强行读取新状态。
+```bash
+docker compose config --quiet && docker compose run --rm sync run --once
+docker compose run --rm sync status
+```
+
+确认状态和笔记后运行 `docker compose up -d sync`，再恢复 Muse 写入。容器停止时会给当前轮次最多 8 秒，Compose 配置留出 10 秒；中断的操作会在下一次运行时从日志恢复。
+
+### 可选：从发布标签自行构建
+
+需要自行构建的同架构 Linux 主机可从发布标签生成同名镜像。从工作目录执行下列命令，构建后回到部署目录，使用同一份 `compose.yaml`。也可用 `docker image save` 将构建结果导出，传到 NAS 后用 `docker image load` 导入。
+
+```bash
+(
+  set -eu
+  version=0.4.0-beta.6
+  git clone --depth 1 --branch "$version" https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions.git
+  cd obsidian-webdav-versions
+  docker build -f headless/Dockerfile -t "obsidian-webdav-headless:$version" .
+)
+```
+
+构建上下文是仓库根目录。镜像基于 `node:22-alpine`，复制 `src/` 和 `headless/` 后即可运行。
 
 ## 7. 同步记录丢失或损坏时恢复
 
-1. 停止 Muse 写入，执行 `dc stop sync`，保留报错和当前现场。
+1. 停止 Muse 写入，执行 `docker compose stop sync`，保留报错和当前现场。
 2. 把整个 `vault/` 移到数据目录之外留作备份，确保 Muse 无法继续写它；不要只备份看起来“正常”的部分。
 3. 备份旧 `state/`，将数据目录下的 `state/` 清空。可以把旧目录整体移到备份位置，再建立空目录，以保留诊断材料。
 4. 重新建立空的 `vault/` 与 `state/`，恢复与容器 UID 相符的权限，核对单一数据挂载。
@@ -184,7 +219,7 @@ dc exec sync node headless/cli.js approve-deletions --count N
 
 ## 8. 卸载
 
-停止 Muse 写入，执行 `dc down` 停止并移除容器。撤销 Muse 对 `vault/` 的 WebDAV 共享权限。备份后由用户决定是否保留 NAS 明文库、本机 `state/` 和配置；不要在容器仍运行时清空它们。卸载此无头端不需要操作其他设备的插件，也不操作原有版本目录。确认不再需要时可删除本机构建的 `obsidian-webdav-headless:local` 镜像。
+停止 Muse 写入，执行 `docker compose down` 停止并移除容器。撤销 Muse 对 `vault/` 的 WebDAV 共享权限。备份后由用户决定是否保留 NAS 明文库、本机 `state/` 和配置；不要在容器仍运行时清空它们。卸载此无头端不需要操作其他设备的插件，也不操作原有版本目录。确认不再使用此版本后，可执行 `docker image rm obsidian-webdav-headless:0.4.0-beta.6` 回收镜像空间。
 
 ## 9. 已知限制和真机检查
 
