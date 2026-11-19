@@ -96,7 +96,8 @@ function missingFiles(previous, current) {
   const missing = [];
   for (const file of [...previous].sort((a, b) => compare(a.path, b.path))) {
     if (after.has(file.path)) continue;
-    const key = metadata(file), available = credits.get(key) || 0;
+    // Bindings learned from a receipt have no filesystem metadata to match.
+    const key = metadata(file), available = file.size === undefined ? 0 : credits.get(key) || 0;
     if (available) credits.set(key, available - 1);
     else missing.push(file.path);
   }
@@ -190,14 +191,39 @@ class Gates {
   }
 
   async deletionState(baseline, snapshot) {
-    const applied = this.recovery ? await this.recovery.deletedSince(baseline.checkpoint) : new Set();
-    // A completed engine deletion since the last successful round is not an
-    // external deletion. Old tombstones recorded in that round are NOT exempt.
-    const present = new Set(snapshot.files.map(file => file.path));
-    const protectedFiles = baseline.files.filter(file => present.has(file.path) || !applied.has(file.path.normalize('NFC')));
-    const paths = missingFiles(protectedFiles, snapshot.files);
-    const empty = protectedFiles.length > 0 && snapshot.files.length === 0;
-    return { paths, empty, blocked: paths.length > this.config.deletionLimit || empty,
+    const records = this.recovery ? await this.recovery.read(baseline.checkpoint?.receiptSequence ?? 0) : null;
+    const applied = this.recovery ? await this.recovery.deletedSince(baseline.checkpoint, records) : new Set();
+    const current = snapshot.files.map(file => ({ ...file, path: file.path.normalize('NFC') }));
+    const present = new Set(current.map(file => file.path));
+    const expected = new Map();
+    for (const file of baseline.files) {
+      const name = file.path.normalize('NFC');
+      expected.set(name, { ...file, path: name });
+    }
+    const addBinding = name => { if (!expected.has(name)) expected.set(name, { path: name }); };
+    for (const name of records?.bound.keys() || []) addBinding(name);
+    const pending = records?.pending;
+    if (pending?.kind === 'apply' && pending.next && present.has(pending.physical.normalize('NFC'))) {
+      // A download landed before its receipt. Even an exact size/mtime match
+      // cannot make its new physical path a credit for an external move.
+      addBinding(pending.physical.normalize('NFC'));
+    }
+    if (pending?.kind === 'push' && !records.completed.has(pending.operationId)) {
+      // Recovery will bind a staged content upload before capture. A pending
+      // deletion also needs a fresh gate decision for its original physical name.
+      const name = pending.physical.normalize('NFC');
+      addBinding(name);
+      applied.delete(name);
+    }
+    const protectedFiles = [...expected.values()].filter(file => present.has(file.path) || !applied.has(file.path));
+    // Include matched moves in the set of accounted-for missing physical paths.
+    // Only their net count is discounted by the existing move rule.
+    const allowed = new Set(protectedFiles.filter(file => !present.has(file.path)).map(file => file.path));
+    const paths = missingFiles(protectedFiles, current);
+    const maskedWipe = pending?.kind === 'apply' && pending.checkMaskedWipe === true && pending.next &&
+      !records.completed.has(pending.operationId) && current.length === 1 && current[0].path === pending.physical.normalize('NFC');
+    const empty = paths.length > 0 && (current.length === 0 || Boolean(maskedWipe));
+    return { paths, allowed, records, empty, maskedWipe, blocked: paths.length > this.config.deletionLimit || empty,
       checksum: digest(paths), baselineChecksum: baseline.checksum };
   }
 
@@ -214,10 +240,11 @@ class Gates {
     const approved = approval && approval.version === 1 && approval.count === deletion.paths.length &&
       approval.checksum === deletion.checksum && approval.baselineChecksum === deletion.baselineChecksum;
     if (deletion.blocked && !approved) {
-      return { ok: false, reason: (deletion.empty ? '笔记文件夹已全空' : '消失的文件超过删除上限') + '：共 ' + deletion.paths.length + ' 个；请恢复文件，或在 NAS 上批准这组删除',
-        pendingDeletions: { count: deletion.paths.length, paths: deletion.paths.slice(0, 20) }, snapshot: stable.snapshot };
+      return { ok: false, reason: (deletion.maskedWipe ? '同步中的旧文件已全部消失，当前仅有新下载的文件' : deletion.empty ? '笔记文件夹已全空' : '消失的文件超过删除上限') + '：共 ' + deletion.paths.length + ' 个；请恢复文件，或在 NAS 上批准这组删除',
+        pendingDeletions: { count: deletion.paths.length, paths: deletion.paths.slice(0, 20),
+          ...(deletion.paths.length > 20 && { allPaths: deletion.paths }) }, snapshot: stable.snapshot };
     }
-    return { ok: true, reason: '', pendingDeletions: null, snapshot: stable.snapshot };
+    return { ok: true, reason: '', pendingDeletions: null, snapshot: stable.snapshot, allowed: deletion.allowed, records: deletion.records };
   }
 
   async saveBaselineAfterSuccess() {

@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { DiskVault, DiskState } = require('../src/local');
+const { GuardedVault, GuardedState, LateDisappearance } = require('./round-guard');
 const { AdaptiveDavRemote } = require('../src/sharded');
 const { SyncEngine } = require('../src/engine');
 const { Gates } = require('./gates');
@@ -88,7 +88,7 @@ class Runner {
       this.mountIdentity = identity;
     }
   }
-  recoverLocalTransaction() {
+  async recoverLocalTransaction() {
     if (!fs.existsSync(path.join(this.config.stateDir, 'file-transaction'))) return;
     // Finish only a previously journaled local operation, using DiskVault's
     // unchanged recovery procedure. There is no remote access or new sync here.
@@ -97,33 +97,42 @@ class Runner {
     try { safeDirectory(this.config.vaultDir); fs.accessSync(this.config.vaultDir, fs.constants.R_OK | fs.constants.X_OK); }
     catch { return; } // let the gate report a missing or unreadable vault
     this.verifyMount();
-    this.local ||= new DiskVault(this.config.vaultDir, '.obsidian', () => !this.stopped, { privateDir: this.config.stateDir });
+    this.local ||= new GuardedVault(this.config.vaultDir, '.obsidian', () => !this.stopped, { privateDir: this.config.stateDir });
+    if (this.gates.recovery) this.local.pending = await this.gates.recovery.state.loadPending();
     this.local.recover();
   }
-  async round() {
+  round() {
+    if (!this.inFlight) this.inFlight = this.runRound().finally(() => { this.inFlight = null; });
+    return this.inFlight;
+  }
+  async runRound() {
     if (this.stopped) return this.status;
     try {
-      this.recoverLocalTransaction();
+      await this.recoverLocalTransaction();
       const gate = await this.gates.check();
       if (this.stopped) return this.status;
       if (!gate.ok) return await this.persist({ ...this.status, state: 'paused', reason: gate.reason, pendingDeletions: gate.pendingDeletions || null });
       this.verifyMount();
       if (!this.engine) {
         // Delay constructing DiskVault until the gates establish a usable vault.
-        const local = this.local ||= new DiskVault(this.config.vaultDir, '.obsidian', () => !this.stopped, { privateDir: this.config.stateDir });
+        const local = this.local ||= new GuardedVault(this.config.vaultDir, '.obsidian', () => !this.stopped, { privateDir: this.config.stateDir });
         const remote = new AdaptiveDavRemote(this.config);
-        const state = new DiskState(this.config.stateDir, this.config.url, this.config.username);
+        const state = this.state = new GuardedState(this.config.stateDir, this.config.url, this.config.username, local);
         this.engine = this.options.engineFactory ? this.options.engineFactory({ local, remote, state, device: this.config.device }) : new SyncEngine({ local, remote, state, device: this.config.device });
       }
+      this.local.startGate(gate);
+      await this.gates.recovery?.reconcileDeletion(gate.records, gate.allowed, this.engine.remote);
       const result = await this.engine.sync({ full: true });
       await this.gates.saveBaselineAfterSuccess();
+      await this.state.finishRound();
       const needsAttention = Object.fromEntries(Object.entries(result.confirmations || {}).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]));
       return await this.persist({ state: 'ok', reason: Object.values(needsAttention).some(Boolean) ? '有待确认项目，请在 Mac 或手机的插件里处理。' : '', lastSuccess: new Date(this.now()).toISOString(), lastResult: { uploaded: result.uploaded || 0, downloaded: result.downloaded || 0, deleted: result.deleted || 0 }, conflicts: result.conflictPaths || [], needsAttention, pendingDeletions: null });
     } catch (error) {
+      if (error instanceof LateDisappearance) return this.persist({ ...this.status, state: 'paused', reason: error.message, pendingDeletions: null });
       return this.persist({ ...this.status, state: 'error', reason: '同步出错：' + publicError(error.message, this.config), pendingDeletions: null });
     }
   }
-  async close() { this.stop(); await this.release(); }
+  async close() { this.stop(); try { await this.inFlight; } finally { await this.release(); } }
 }
 async function createRunner(config, options = {}) {
   requireInstance(config);
