@@ -1,9 +1,7 @@
 services:
   sync:
-    image: obsidian-webdav-headless:local
-    build:
-      context: ..
-      dockerfile: headless/Dockerfile
+    image: obsidian-webdav-headless:0.4.0-beta.6
+    pull_policy: never
     # Fill in the non-root numeric user that actually writes Muse's WebDAV files.
     user: "${NAS_SYNC_UID:?Set NAS_SYNC_UID}:${NAS_SYNC_GID:?Set NAS_SYNC_GID}"
     environment:
