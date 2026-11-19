@@ -1,0 +1,11 @@
+{
+  "url": "https://dav.example.invalid/notes/",
+  "username": "sync-account",
+  "passwordFile": "/run/secrets/webdav-password",
+  "device": "NAS",
+  "dataDir": "/data",
+  "intervalSeconds": 30,
+  "settleSeconds": 5,
+  "deletionLimit": 20,
+  "allowInsecureLoopback": false
+}

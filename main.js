@@ -1813,7 +1813,7 @@ class DiskState {
 }
 
 class DiskVault {
-  constructor(root, configDir = '.obsidian', guard = () => true) {
+  constructor(root, configDir = '.obsidian', guard = () => true, options = {}) {
     this.root = fs.realpathSync(root);
     this.configDir = configDir;
     this.guard = guard;
@@ -1825,9 +1825,17 @@ class DiskVault {
       throw new Error('不支持这个 Obsidian 配置目录');
     }
     let dir = this.root;
-    for (const part of [configDir, 'plugins', 'obsidian-webdav-versions', 'local-state']) {
-      dir = path.join(dir, part);
+    if (options.privateDir !== undefined) {
+      if (typeof options.privateDir !== 'string' || !path.isAbsolute(options.privateDir)) {
+        throw new Error('私有目录必须是绝对路径');
+      }
+      dir = options.privateDir;
       safeDir(dir, true);
+    } else {
+      for (const part of [configDir, 'plugins', 'obsidian-webdav-versions', 'local-state']) {
+        dir = path.join(dir, part);
+        safeDir(dir, true);
+      }
     }
     this.privateDir = dir;
     this.transaction = path.join(dir, 'file-transaction');

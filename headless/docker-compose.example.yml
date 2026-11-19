@@ -1,0 +1,35 @@
+services:
+  sync:
+    image: obsidian-webdav-headless:0.4.0-beta.6
+    pull_policy: never
+    # Fill in the non-root numeric user that actually writes Muse's WebDAV files.
+    user: "${NAS_SYNC_UID:?Set NAS_SYNC_UID}:${NAS_SYNC_GID:?Set NAS_SYNC_GID}"
+    environment:
+      HEADLESS_CONFIG: /config/config.json
+    volumes:
+      # A single mount contains BOTH vault/ and state/. Never split these mounts.
+      - type: bind
+        source: ${NAS_SYNC_DATA:?Set NAS_SYNC_DATA}
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NAS_SYNC_CONFIG:?Set NAS_SYNC_CONFIG}
+        target: /config/config.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NAS_SYNC_PASSWORD_FILE:?Set NAS_SYNC_PASSWORD_FILE}
+        target: /run/secrets/webdav-password
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "node", "headless/cli.js", "status", "--check"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
+      start_period: 60s

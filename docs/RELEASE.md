@@ -1,17 +1,26 @@
-# 0.4.0-beta.5：残留空文件夹清理
+# 0.4.0-beta.6 · NAS 无头同步端
 
-**iPhone 真机尚未验收；电脑真机清理也待验收。** 更新保留笔记、设置与同步记录，不要卸载重装。
+NAS 现在可以作为第三台设备与 Mac、iPhone 同步。同步端在 Docker 中运行，将笔记和附件按原名存入 `vault/`，供 Muse 等外部工具通过飞牛 WebDAV 访问。每台设备保留自己的同步记录。[Docker 部署教程](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/blob/0.4.0-beta.6/docs/NAS无头同步端.md)
 
-电脑在一轮同步中实际删除或移走文件后，使用系统非递归删除清理因此变空的父目录。任何文件、隐藏内容或无关空子目录都会让自动清理停止；本机用户自己清空的目录和历史残留目录保留，进入确认窗口。
+### Docker 镜像与配置
 
-“查看同步冲突”新增第四组“空文件夹”，显示路径、子目录数和电脑端的 `.DS_Store` 标记，支持单项/全部清理和保留。仅有空文件夹时不自动弹窗，也不计入待确认文件数。保留名单只属于本机，重启有效，设置页可重置。
+| NAS 处理器（`uname -m`） | 下载的发布附件 |
+| --- | --- |
+| Intel 或 AMD 64 位（`x86_64`） | `obsidian-webdav-headless-0.4.0-beta.6-linux-amd64.tar.gz` |
+| ARM 64 位（`aarch64` 或 `arm64`） | `obsidian-webdav-headless-0.4.0-beta.6-linux-arm64.tar.gz` |
 
-手机仍不自动删除目录。确认清理手机目录或电脑含 `.DS_Store` 的目录时，使用 Obsidian 回收站，并在队列内复查子树、目录事件、编辑器和前台状态。永久删除设置、不可读设置或缺失接口会拒绝执行。**最后校验和原生回收站操作之间写入的新文件，仍可能随目录进入回收站，可以恢复。** 电脑纯目录的系统非递归删除不会删除文件。
+在有网络的设备上下载对应镜像、`compose.yaml`、`config.example.json` 和 `SHA256SUMS`，一起传到 NAS。按教程核对校验和后，用 `docker load -i <镜像归档文件名>` 离线导入。两种附件导入后的本地镜像名均为 `obsidian-webdav-headless:0.4.0-beta.6`。在独立的测试 WebDAV 目录初始化并确认双向同步后，再配置正式笔记库。[下载 beta.6](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/releases/tag/0.4.0-beta.6)
 
-目录没有远端对象，清理不读写远端。手动清理一台设备的空目录不会传播到其他设备，其他设备各自在窗口中处理。电脑可能自动删掉另一设备故意保留的空目录；后来放入文件时会重建。旧版设备不会获得本版清理功能。
+### NAS 端的同步保护
 
-自动化验证 414/414 通过，原 358 项测试和断言保持原样；手机无 Node 沙箱、0.1.1 协议夹具及新状态直接回退 beta.4 均通过。四条性能阈值命令退出 0：三条次数与字节完全相同，20 ms 延迟上传轮只有既有 5 秒检查点字节波动（私有/总读写各 -7,623 字节，哈希输入 -22,453 字节），调用数、HTTP、库内字节和最终状态大小不变。固定时钟诊断两版结果精确相同，沿用用户先前对这类波动的限定豁免，原始差异完整保留。
+- 同步期间消失的文件和中断时尚在处理的删除，都要经过本轮删除检查。远端已经收到删除但响应丢失时，只补本地完成记录。远端未收到且本地已放回文件时，撤销原来的待办删除。
+- 删空笔记库或超出删除数量上限时暂停，核对状态中列出的路径后，可放回文件或按实际数量批准。同步端能识别自身执行的删除和冲突副本清理。
+- 文件或文件夹的名字采用 Unicode 分解形式时，状态会保留原始路径并提示改为 NFC。文件名与账号有相同字串也能完整显示，密码和认证串继续隐藏。
 
-协议和 `local-state/` 格式不变，只在 `data.json` 增加本机保留名单。更新时只覆盖 `main.js` 和 `manifest.json`，保留笔记、设置和同步记录，不卸载重装、不在设备间复制状态。电脑与手机可在 BRAT 中编辑 `bitcaoxubo-cyber/obsidian-webdav-versions`，将固定版本改为 `0.4.0-beta.5`，更新后先在独立测试库验收。
+### Mac 和 iPhone 插件
 
-逐场景结果、所有目录删除入口及真机填写表见 [交付报告](空文件夹清理.md)。本轮没有写入真实 WebDAV；手机原先丢失 `next` 的起因仍未确认，之前的恢复保护保留。
+在 BRAT 中将 `bitcaoxubo-cyber/obsidian-webdav-versions` 的固定版本改为 `0.4.0-beta.6`。手动升级时，用附件 `main.js` 和 `manifest.json` 覆盖已有的同名文件，保留 `data.json`、`local-state/` 和笔记。首次安装也可使用 `obsidian-webdav-versions-0.4.0-beta.6.zip`。最低 Obsidian 版本为 1.11.4。beta.5 的空文件夹清理继续可用。[插件安装与升级](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/blob/0.4.0-beta.6/README.md#更新插件) · [beta.5 发行说明](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/releases/tag/0.4.0-beta.5)
+
+### 验证范围
+
+合并前的 Linux 自动化测试和 GitHub Actions 均通过 817 项测试，覆盖 Mac 与 iPhone 模拟设备的 60 组随机编辑、200 次同步中随机删除，以及进程被杀和响应丢失后的恢复。飞牛实际文件权限、Muse 写入方式及 iPhone 后台行为仍需在自己的测试库核对。[逐项验收报告](https://github.com/bitcaoxubo-cyber/obsidian-webdav-versions/blob/0.4.0-beta.6/docs/NAS无头同步端-验收报告.md#补充任务六验收)

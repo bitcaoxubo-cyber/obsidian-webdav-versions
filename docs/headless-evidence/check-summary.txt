@@ -1,0 +1,13 @@
+Command: TMPDIR=<case-sensitive APFS temp volume> npm run check
+Runtime: Node v24.22.1 on macOS
+Baseline: bdb26b701e5be1693633145b062e30c62337f3db
+Existing baseline tests: 414, source files unchanged
+
+ℹ tests 513
+ℹ suites 0
+ℹ pass 513
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 120050.884667
