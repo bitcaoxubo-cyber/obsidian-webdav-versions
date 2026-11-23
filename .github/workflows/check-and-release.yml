@@ -1,7 +1,7 @@
 name: Check and release
 on:
   push:
-    branches: [main]
+    branches: [main, codex/release-0.4.0]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -18,7 +18,10 @@ jobs:
       - run: node --test test/*.test.js
       - run: git diff --exit-code -- main.js
   release:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/release-0.4.0'
+    if: >-
+      github.ref == 'refs/heads/codex/release-0.4.0' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.event.before == '25eea6c9ff31e5872cb64e5e860d0ea8f059fcbf'))
     needs: check
     runs-on: ubuntu-latest
     permissions:
