@@ -18,7 +18,7 @@ jobs:
       - run: node --test test/*.test.js
       - run: git diff --exit-code -- main.js
   release:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/release-0.4.0'
     needs: check
     runs-on: ubuntu-latest
     permissions:
@@ -29,11 +29,14 @@ jobs:
         with:
           node-version: '22'
       - run: node scripts/build.js && node scripts/package.js
-      - name: Publish prerelease with BRAT assets
+      - name: Publish stable release with BRAT assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           RELEASE_TAG=$(node -p "require('./manifest.json').version")
+          test "$RELEASE_TAG" = "0.4.0"
+          test "$(git hash-object dist/main.js)" = "00acd116dbd8ccea5b0e47536380f1c66ca9e964"
+          (cd dist && sha256sum --check SHA256SUMS)
           gh release create "$RELEASE_TAG" dist/main.js dist/manifest.json dist/*.zip dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --prerelease \
+            --target "$GITHUB_SHA" --latest \
             --title "WebDAV Versions $RELEASE_TAG" --notes-file docs/RELEASE.md
