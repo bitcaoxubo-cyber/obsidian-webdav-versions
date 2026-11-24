@@ -71,6 +71,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+      - name: Check release version and notes
+        id: release_check
+        run: |
+          kind=$(node scripts/release-check.js)
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
       - run: node scripts/build.js && node scripts/package.js
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -86,11 +91,17 @@ jobs:
           sha256sum "obsidian-webdav-headless-${version}-linux-amd64.tar.gz" \
             "obsidian-webdav-headless-${version}-linux-arm64.tar.gz" compose.yaml config.example.json >> SHA256SUMS
           sha256sum --check SHA256SUMS
-      - name: Publish prerelease with plugin and NAS assets
+      - name: Publish release with plugin and NAS assets
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_KIND: ${{ steps.release_check.outputs.kind }}
         run: |
           RELEASE_TAG=$(node -p "require('./manifest.json').version")
+          case "$RELEASE_KIND" in
+            stable) flag=--latest ;;
+            prerelease) flag=--prerelease ;;
+            *) exit 1 ;;
+          esac
           gh release create "$RELEASE_TAG" dist/main.js dist/manifest.json dist/*.zip dist/*.tar.gz dist/compose.yaml dist/config.example.json dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --prerelease \
+            --target "$GITHUB_SHA" "$flag" \
             --title "WebDAV Versions $RELEASE_TAG" --notes-file docs/RELEASE.md
